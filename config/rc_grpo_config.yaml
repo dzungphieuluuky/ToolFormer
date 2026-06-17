@@ -1,0 +1,26 @@
+extends: "config/base_config.yaml"
+
+training:
+  output_dir: "outputs/rc_grpo_model"
+  # Path to RCTP-FT checkpoint from Phase 1 (run_sft.py --rctp)
+  sft_model_path: "outputs/sft_model"
+  max_steps: 500
+  num_generations: 8          # G rollouts per prompt
+
+grpo:
+  loss_type: "grpo"           # standard GRPO loss — diversity comes from tokens
+  temperature: 1.0
+  kl_coef: 0.04
+
+rc_grpo:
+  # Phase-1 RCTP-FT settings (used in run_sft.py --rctp)
+  high_reward_token: "<|high_reward|>"
+  low_reward_token:  "<|low_reward|>"
+
+  # Phase-2 RC-GRPO settings
+  # Fraction of rollouts per group conditioned on <|high_reward|>
+  # Paper uses ~50% — forces within-group reward diversity
+  high_fraction: 0.5
+
+  # Binary reward threshold (args accuracy must exceed this for R=1)
+  args_threshold: 0.8

@@ -1,0 +1,126 @@
+# ─────────────────────────────────────────────
+# Shared base configuration for all algorithms
+# ─────────────────────────────────────────────
+
+model:
+  name: "unsloth/qwen3-4b-unsloth-bnb-4bit"
+  max_seq_length: 2048
+  load_in_4bit: true
+  fast_inference: true
+  max_lora_rank: 16
+  gpu_memory_utilization: 0.7
+
+lora:
+  r: 16
+  lora_alpha: 16
+  lora_dropout: 0.0
+  bias: "none"
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  use_gradient_checkpointing: "unsloth"
+
+data:
+  # ── Processed output directory ──────────────────────────────────────────
+  processed_dir: "data/processed"
+
+  # ── Function schema files (written by prepare_data.py) ──────────────────
+  # These are the PRIMARY schema sources for the generator.
+  # If you only have a single schema file, prepare_data.py will split it
+  # into these two automatically.
+  train_schema_path: "data/processed/function_schema_train.json"
+  test_schema_path:  "data/processed/function_schema_test.json"
+
+  # ── Full merged library (train + test, used by retriever + trainer) ──────
+  function_library_path: "data/processed/function_library.json"
+
+  # ── Argument value catalog (built by build_argument_values.py) ───────────
+  argument_values_path: "data/processed/argument_values.json"
+
+  # ── Raw generator output (before enrichment) ────────────────────────────
+  raw_train_path: "data/processed/raw_train_dataset.jsonl"
+  raw_test_path:  "data/processed/raw_test_dataset.jsonl"
+
+  # ── Final enriched dataset (after argument value retrieval) ─────────────
+  # These are what SFT / GRPO trainers load.
+  train_path: "data/processed/train_dataset.jsonl"
+  test_path:  "data/processed/test_dataset.jsonl"
+
+  # ── Retrieval index ───────────────────────────────────────────────────────
+  retrieval_index_dir: "data/processed/retrieval_index"
+
+  # ── Sequence lengths ──────────────────────────────────────────────────────
+  max_prompt_length:     1024
+  max_completion_length: 512
+
+retrieval:
+  method: "hybrid"               # bm25 | embedding | hybrid
+  top_k: 5
+  top_k_values: 3                # argument values per parameter
+  encoder_model: "sentence-transformers/all-MiniLM-L6-v2"
+
+training:
+  learning_rate: 5.0e-6
+  adam_beta1: 0.9
+  adam_beta2: 0.99
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  lr_scheduler_type: "cosine"
+  optim: "adamw_8bit"
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 4
+  num_generations: 8
+  max_steps: 500
+  save_steps: 100
+  logging_steps: 1
+  max_grad_norm: 0.1
+  report_to: "none"
+  seed: 3407
+
+grpo:
+  temperature: 1.0
+  kl_coef: 0.04
+  epsilon: 0.2
+  epsilon_high: 0.28
+  loss_type: "grpo"
+  mask_truncated_completions: true
+
+sft:
+  num_train_epochs: 1
+  output_dir: "outputs/sft_model"
+  rctp_output_dir: "outputs/rctp_sft_model"
+  per_device_train_batch_size: 2
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+
+dataset_generation:
+  provider: "openrouter"
+  model: "openai/gpt-oss-20b:free"
+  api_key_env: "OPENROUTER_API_KEY"
+  base_url: null
+  max_workers: 8
+  requests_per_minute: 500
+  total_samples: 2400
+  train_split: 0.89
+  temperature: 0.9
+  max_tokens: 1024
+  retry_attempts: 3
+  retry_delay_seconds: 5
+
+  # ── Function train/test split ─────────────────────────────────────────────
+  # Used by prepare_data.py when splitting a single schema file.
+  # Ignored when --train-schema and --test-schema are passed directly.
+  split:
+    reserved_test_functions: 5      # how many functions to hold out for test
+    test_function_names: null       # list specific names, or null for random
+
+  workflow_distribution:
+    single_call:  0.60
+    parallel:     0.20
+    sequential:   0.15
+    abstention:   0.05
