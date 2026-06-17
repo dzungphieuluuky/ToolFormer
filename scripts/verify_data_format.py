@@ -32,8 +32,9 @@ SEP = "=" * 80
 
 
 class MockTokenizer:
-    def apply_chat_template(self, messages, tokenize=False,
-                            add_generation_prompt=False, **kw):
+    def apply_chat_template(
+        self, messages, tokenize=False, add_generation_prompt=False, **kw
+    ):
         parts = []
         for m in messages:
             parts.append(f"<{m['role']}>\n{m['content']}\n</{m['role']}>")
@@ -45,18 +46,20 @@ class MockTokenizer:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/base_config.yaml")
-    parser.add_argument("--mode",   default="grpo", choices=["grpo", "sft"])
-    parser.add_argument("--split",  default="train", choices=["train", "test"])
-    parser.add_argument("--n",      type=int, default=1)
+    parser.add_argument("--mode", default="grpo", choices=["grpo", "sft"])
+    parser.add_argument("--split", default="train", choices=["train", "test"])
+    parser.add_argument("--n", type=int, default=1)
     args = parser.parse_args()
 
-    cfg      = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+    cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     data_cfg = cfg["data"]
 
     with open(data_cfg["function_library_path"], encoding="utf-8") as fh:
         function_library = json.load(fh)
 
-    jsonl_path = data_cfg["train_path"] if args.split == "train" else data_cfg["test_path"]
+    jsonl_path = (
+        data_cfg["train_path"] if args.split == "train" else data_cfg["test_path"]
+    )
     raw = []
     with jsonlines.open(jsonl_path) as reader:
         for obj in reader:
@@ -68,7 +71,7 @@ def main():
 
     for i, sample in enumerate(raw):
         print(f"\n{SEP}")
-        print(f"  SAMPLE {i+1}  |  mode={args.mode}  |  split={args.split}")
+        print(f"  SAMPLE {i + 1}  |  mode={args.mode}  |  split={args.split}")
         print(f"  id:       {sample['id'][:36]}")
         print(f"  query:    {sample['query']}")
         print(f"  function: {sample['function_name']}")
@@ -100,8 +103,16 @@ def main():
             for param, matches in arg_vals.items():
                 print(f"  {param}:")
                 for m in matches:
-                    code  = m.get("code",  m.get("code",  "?")) if isinstance(m, dict) else m.code
-                    label = m.get("label", m.get("label", "?")) if isinstance(m, dict) else m.label
+                    code = (
+                        m.get("code", m.get("code", "?"))
+                        if isinstance(m, dict)
+                        else m.code
+                    )
+                    label = (
+                        m.get("label", m.get("label", "?"))
+                        if isinstance(m, dict)
+                        else m.label
+                    )
                     score = m.get("score", "?") if isinstance(m, dict) else m.score
                     print(f"    {code} → {label}  (score={score})")
         else:

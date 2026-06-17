@@ -16,13 +16,13 @@ logger = get_logger("run_rc_grpo")
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config",      default="config/rc_grpo_config.yaml")
+    parser.add_argument("--config", default="config/rc_grpo_config.yaml")
     parser.add_argument("--base-config", default="config/base_config.yaml")
     args = parser.parse_args()
 
     base = OmegaConf.load(args.base_config)
     algo = OmegaConf.load(args.config)
-    cfg  = OmegaConf.to_container(OmegaConf.merge(base, algo), resolve=True)
+    cfg = OmegaConf.to_container(OmegaConf.merge(base, algo), resolve=True)
 
     logger.info("[RC-GRPO] Config loaded. Starting training...")
     train_rc_grpo(cfg)

@@ -43,16 +43,16 @@ logger = get_logger("run_sft")
 
 def format_standard_sft(sample: dict, function_library: dict, tokenizer) -> dict:
     """Standard SFT format — no reward conditioning."""
-    query     = sample["query"]
+    query = sample["query"]
     retrieved = sample.get("retrieved_functions", [])
-    gt        = sample.get("ground_truth", {})
+    gt = sample.get("ground_truth", {})
 
     user_content = build_prompt(query, retrieved, function_library)
     assistant_content = _build_assistant_response(gt)
 
     messages = [
-        {"role": "system",    "content": SYSTEM_PROMPT},
-        {"role": "user",      "content": user_content},
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
         {"role": "assistant", "content": assistant_content},
     ]
     return {
@@ -67,9 +67,9 @@ def format_rctp_sft(sample: dict, function_library: dict, tokenizer) -> dict:
     RCTP-FT format — prepends reward token to system prompt.
     Reward token is determined by whether ground truth has a valid function call.
     """
-    query     = sample["query"]
+    query = sample["query"]
     retrieved = sample.get("retrieved_functions", [])
-    gt        = sample.get("ground_truth", {})
+    gt = sample.get("ground_truth", {})
 
     # Determine reward token based on trajectory quality
     # R=1 (high reward) if:  non-abstention AND has function AND has arguments
@@ -87,8 +87,8 @@ def format_rctp_sft(sample: dict, function_library: dict, tokenizer) -> dict:
     rctp_system = f"{reward_token}\n{SYSTEM_PROMPT}"
 
     messages = [
-        {"role": "system",    "content": rctp_system},
-        {"role": "user",      "content": user_content},
+        {"role": "system", "content": rctp_system},
+        {"role": "user", "content": user_content},
         {"role": "assistant", "content": assistant_content},
     ]
     return {
@@ -100,28 +100,33 @@ def format_rctp_sft(sample: dict, function_library: dict, tokenizer) -> dict:
 
 def _build_assistant_response(gt: dict) -> str:
     """Build the expected assistant response string from ground truth."""
-    call_json = json.dumps({
-        "function":  gt.get("function"),
-        "arguments": gt.get("arguments", {}),
-    }, indent=2)
-    reasoning = gt.get("reasoning", "Selecting the appropriate function based on the query.")
-    return (
-        f"<reasoning>\n{reasoning}\n</reasoning>\n"
-        f"<call>\n{call_json}\n</call>"
+    call_json = json.dumps(
+        {
+            "function": gt.get("function"),
+            "arguments": gt.get("arguments", {}),
+        },
+        indent=2,
     )
+    reasoning = gt.get(
+        "reasoning", "Selecting the appropriate function based on the query."
+    )
+    return f"<reasoning>\n{reasoning}\n</reasoning>\n<call>\n{call_json}\n</call>"
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/base_config.yaml")
-    parser.add_argument("--rctp",   action="store_true",
-                        help="Run RCTP-FT (RC-GRPO Phase 1) instead of standard SFT")
+    parser.add_argument(
+        "--rctp",
+        action="store_true",
+        help="Run RCTP-FT (RC-GRPO Phase 1) instead of standard SFT",
+    )
     args = parser.parse_args()
 
-    cfg      = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+    cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     data_cfg = cfg["data"]
-    sft_cfg  = cfg.get("sft", {})
-    rc_cfg   = cfg.get("rc_grpo", {})
+    sft_cfg = cfg.get("sft", {})
+    rc_cfg = cfg.get("rc_grpo", {})
 
     model, tokenizer = load_model(cfg)
 
@@ -142,37 +147,41 @@ def main():
 
     # Format samples
     if args.rctp:
-        formatted = [format_rctp_sft(s, function_library, tokenizer) for s in raw_samples]
+        formatted = [
+            format_rctp_sft(s, function_library, tokenizer) for s in raw_samples
+        ]
         output_dir = rc_cfg.get("sft_output_dir", "outputs/rctp_sft_model")
         logger.info(f"[RCTP-FT] Formatted {len(formatted)} samples with reward tokens.")
     else:
-        formatted = [format_standard_sft(s, function_library, tokenizer) for s in raw_samples]
+        formatted = [
+            format_standard_sft(s, function_library, tokenizer) for s in raw_samples
+        ]
         output_dir = sft_cfg.get("output_dir", "outputs/sft_model")
 
     dataset = Dataset.from_list(formatted)
 
     sft_args = SFTConfig(
-        output_dir                  = output_dir,
-        num_train_epochs            = sft_cfg.get("num_train_epochs", 1),
-        per_device_train_batch_size = sft_cfg.get("per_device_train_batch_size", 2),
-        gradient_accumulation_steps = sft_cfg.get("gradient_accumulation_steps", 4),
-        learning_rate               = sft_cfg.get("learning_rate", 2e-4),
-        warmup_ratio                = 0.1,
-        logging_steps               = 10,
-        save_steps                  = 200,
-        max_seq_length              = (
+        output_dir=output_dir,
+        num_train_epochs=sft_cfg.get("num_train_epochs", 1),
+        per_device_train_batch_size=sft_cfg.get("per_device_train_batch_size", 2),
+        gradient_accumulation_steps=sft_cfg.get("gradient_accumulation_steps", 4),
+        learning_rate=sft_cfg.get("learning_rate", 2e-4),
+        warmup_ratio=0.1,
+        logging_steps=10,
+        save_steps=200,
+        max_seq_length=(
             data_cfg.get("max_prompt_length", 1024)
             + data_cfg.get("max_completion_length", 512)
         ),
-        report_to              = "none",
-        dataset_text_field     = "text",
+        report_to="none",
+        dataset_text_field="text",
     )
 
     trainer = SFTTrainer(
-        model         = model,
-        tokenizer     = tokenizer,
-        train_dataset = dataset,
-        args          = sft_args,
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset,
+        args=sft_args,
     )
 
     mode = "RCTP-FT (Phase 1 for RC-GRPO)" if args.rctp else "standard SFT"
