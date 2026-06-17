@@ -21,26 +21,26 @@ logger = get_logger(__name__)
 
 METRIC_DISPLAY_NAMES = {
     "function_selection_accuracy": "Func. Selection Acc.",
-    "argument_accuracy":           "Arg. Accuracy",
-    "schema_validity":             "Schema Validity",
-    "execution_success_rate":      "Exec. Success Rate",
-    "task_success_rate":           "Task Success Rate",
-    "hallucinated_call_rate":      "Hallucination Rate ↓",
-    "abstention_accuracy":         "Abstention Acc.",
-    "latency_ms":                  "Latency (ms) ↓",
-    "cost_per_query_usd":          "Cost/Query (USD) ↓",
+    "argument_accuracy": "Arg. Accuracy",
+    "schema_validity": "Schema Validity",
+    "execution_success_rate": "Exec. Success Rate",
+    "task_success_rate": "Task Success Rate",
+    "hallucinated_call_rate": "Hallucination Rate ↓",
+    "abstention_accuracy": "Abstention Acc.",
+    "latency_ms": "Latency (ms) ↓",
+    "cost_per_query_usd": "Cost/Query (USD) ↓",
 }
 
 HIGHER_IS_BETTER = {
     "hallucinated_call_rate": False,
-    "latency_ms":             False,
-    "cost_per_query_usd":     False,
+    "latency_ms": False,
+    "cost_per_query_usd": False,
 }
 
 
 def generate_report(
-    eval_results:  list[dict],
-    output_dir:    str = "outputs/evaluation_reports",
+    eval_results: list[dict],
+    output_dir: str = "outputs/evaluation_reports",
 ) -> None:
     """
     Generate full comparative report for all evaluated models.
@@ -56,9 +56,9 @@ def generate_report(
     # ── Build summary DataFrame ───────────────────────────────────────────────
     rows = []
     for result in eval_results:
-        model  = result["model"]
-        agg    = result["aggregate"]
-        row    = {"Model": model}
+        model = result["model"]
+        agg = result["aggregate"]
+        row = {"Model": model}
         for k, display in METRIC_DISPLAY_NAMES.items():
             row[display] = round(agg.get(k, float("nan")), 4)
         rows.append(row)
@@ -123,7 +123,7 @@ def _plot_radar(df: pd.DataFrame, out: Path) -> None:
         "Abstention Acc.",
     ]
     categories = [c for c in radar_metrics if c in df.columns]
-    N          = len(categories)
+    N = len(categories)
     if N < 3:
         return
 
@@ -134,7 +134,7 @@ def _plot_radar(df: pd.DataFrame, out: Path) -> None:
     cmap = plt.get_cmap("tab10")
 
     for i, (model, row) in enumerate(df.iterrows()):
-        vals  = [row.get(c, 0.0) for c in categories]
+        vals = [row.get(c, 0.0) for c in categories]
         vals += vals[:1]
         ax.plot(angles, vals, "o-", linewidth=2, color=cmap(i), label=model)
         ax.fill(angles, vals, alpha=0.1, color=cmap(i))

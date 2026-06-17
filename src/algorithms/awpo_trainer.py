@@ -35,9 +35,7 @@ from typing import Any
 import torch
 from trl import GRPOTrainer
 
-from .base_trainer import (
-    load_model, build_grpo_config, load_grpo_dataset
-)
+from .base_trainer import load_model, build_grpo_config, load_grpo_dataset
 from src.reward.awpo_reward import (
     awpo_reward_func,
     awpo_group_advantages,
@@ -51,6 +49,7 @@ logger = get_logger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class AWPOTrainer(GRPOTrainer):
     """
@@ -79,11 +78,14 @@ class AWPOTrainer(GRPOTrainer):
         self.adaptive_clip_delta = cfg.get("adaptive_clip_delta", 0.2)
 
         # Outcome reward weights
-        self.outcome_weights = cfg.get("outcome_weights", {
-            "func_selection": 0.4,
-            "args_accuracy":  0.3,
-            "execution":      0.3,
-        })
+        self.outcome_weights = cfg.get(
+            "outcome_weights",
+            {
+                "func_selection": 0.4,
+                "args_accuracy": 0.3,
+                "execution": 0.3,
+            },
+        )
 
         # Cache for reasoning rewards (populated by reward_funcs call)
         # Maps completion text → reasoning score
@@ -103,9 +105,9 @@ class AWPOTrainer(GRPOTrainer):
 
     def compute_advantages(
         self,
-        rewards:       torch.Tensor,   # [B]  outcome rewards from reward_funcs
-        group_indices: torch.Tensor,   # [B]  which group each sample belongs to
-        completions:   list[str] | None = None,
+        rewards: torch.Tensor,  # [B]  outcome rewards from reward_funcs
+        group_indices: torch.Tensor,  # [B]  which group each sample belongs to
+        completions: list[str] | None = None,
     ) -> tuple[torch.Tensor, float]:
         """
         Replace standard GRPO (R-μ)/σ normalisation with AWPO algorithm.
@@ -117,15 +119,15 @@ class AWPOTrainer(GRPOTrainer):
             adaptive_clip_expansion : scalar δ (mean over all groups)
                                       used to widen clip in compute_loss
         """
-        B          = rewards.shape[0]
+        B = rewards.shape[0]
         advantages = torch.zeros(B, dtype=torch.float32)
         clip_deltas: list[float] = []
 
         unique_groups = group_indices.unique().tolist()
 
         for gid in unique_groups:
-            mask    = (group_indices == gid).nonzero(as_tuple=True)[0]
-            g_idx   = mask.tolist()
+            mask = (group_indices == gid).nonzero(as_tuple=True)[0]
+            g_idx = mask.tolist()
 
             # Outcome rewards for this group
             out_r = [float(rewards[i]) for i in g_idx]
@@ -133,17 +135,16 @@ class AWPOTrainer(GRPOTrainer):
             # Reasoning rewards for this group
             if completions is not None:
                 reason_r = [
-                    self._reasoning_cache.get(completions[i], 0.0)
-                    for i in g_idx
+                    self._reasoning_cache.get(completions[i], 0.0) for i in g_idx
                 ]
             else:
                 reason_r = [0.0] * len(g_idx)
 
             # Compute AWPO advantages for this group
             group_advs, clip_delta = awpo_group_advantages(
-                outcome_rewards   = out_r,
-                reasoning_rewards = reason_r,
-                tau               = self.tau,
+                outcome_rewards=out_r,
+                reasoning_rewards=reason_r,
+                tau=self.tau,
             )
 
             for local_idx, global_idx in enumerate(g_idx):
@@ -158,8 +159,8 @@ class AWPOTrainer(GRPOTrainer):
     def compute_loss(
         self,
         model,
-        inputs:             dict[str, Any],
-        return_outputs:     bool = False,
+        inputs: dict[str, Any],
+        return_outputs: bool = False,
         num_items_in_batch: int | None = None,
     ):
         """
@@ -183,16 +184,17 @@ class AWPOTrainer(GRPOTrainer):
         )
 
         if clip_delta > 0.0:
-            self.args.epsilon = original_eps   # restore
+            self.args.epsilon = original_eps  # restore
 
         return loss_output
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def train_awpo(config: dict) -> None:
-    awpo_cfg  = config.get("awpo", {})
-    data_cfg  = config.get("data",  {})
+    awpo_cfg = config.get("awpo", {})
+    data_cfg = config.get("data", {})
     train_cfg = config.get("training", {})
 
     model, tokenizer = load_model(config)
@@ -204,19 +206,19 @@ def train_awpo(config: dict) -> None:
 
     grpo_args = build_grpo_config(
         config,
-        output_dir = train_cfg.get("output_dir", "outputs/awpo_model"),
+        output_dir=train_cfg.get("output_dir", "outputs/awpo_model"),
     )
 
     trainer = AWPOTrainer(
-        model            = model,
-        processing_class = tokenizer,
-        reward_funcs     = [
-            awpo_reward_func,   # outcome reward (func sel + args + exec)
-            format_reward,      # XML format reward
+        model=model,
+        processing_class=tokenizer,
+        reward_funcs=[
+            awpo_reward_func,  # outcome reward (func sel + args + exec)
+            format_reward,  # XML format reward
         ],
-        args             = grpo_args,
-        train_dataset    = dataset,
-        awpo_config      = awpo_cfg,
+        args=grpo_args,
+        train_dataset=dataset,
+        awpo_config=awpo_cfg,
     )
 
     logger.info("[AWPO] Starting training...")

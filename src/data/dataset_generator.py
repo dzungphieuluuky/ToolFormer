@@ -41,20 +41,22 @@ from tenacity import (
 )
 from tqdm.auto import tqdm
 import logging
+
 _log = logging.getLogger("tenacity.retry")
 _log.setLevel(logging.DEBUG)
-logging.basicConfig()   # ensure a handler exists
+logging.basicConfig()  # ensure a handler exists
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Data structures
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class GroundTruth:
     function: str
     arguments: dict[str, Any]
-    workflow_type: str          # single_call | parallel | sequential | abstention
+    workflow_type: str  # single_call | parallel | sequential | abstention
     # For multi-call workflows
     calls: list[dict] = field(default_factory=list)
 
@@ -64,15 +66,16 @@ class DataSample:
     id: str
     query: str
     workflow_type: str
-    function_name: str          # primary function (or "none" for abstention)
-    ground_truth: dict          # serialised GroundTruth
-    retrieved_functions: list[str]   # simulated top-k from library
-    split: str = "train"        # train | test
+    function_name: str  # primary function (or "none" for abstention)
+    ground_truth: dict  # serialised GroundTruth
+    retrieved_functions: list[str]  # simulated top-k from library
+    split: str = "train"  # train | test
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # API client factory
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class _APIClient:
     """
@@ -89,14 +92,15 @@ class _APIClient:
         base_url: str | None = None,
     ):
         self.provider = provider.lower()
-        self.model    = model
-        self._client  = self._build_client(api_key, base_url)
+        self.model = model
+        self._client = self._build_client(api_key, base_url)
 
     # ── Client factory ────────────────────────────────────────────────────────
 
     def _build_client(self, api_key: str, base_url: str | None):
         if self.provider == "openai":
             from openai import OpenAI
+
             kwargs = {"api_key": api_key}
             if base_url:
                 kwargs["base_url"] = base_url
@@ -104,36 +108,41 @@ class _APIClient:
 
         elif self.provider == "openrouter":
             from openai import OpenAI
+
             # OpenRouter requires HTTP-Referer + X-OpenRouter-Title on every request.
             # Pass them via default_headers so they appear on all calls
             # without any change to the call sites.
             return OpenAI(
-                api_key         = api_key,
-                base_url        = base_url or "https://openrouter.ai/api/v1",
-                default_headers = {
+                api_key=api_key,
+                base_url=base_url or "https://openrouter.ai/api/v1",
+                default_headers={
                     "HTTP-Referer": "https://github.com/telco-agent-rl",
-                    "X-OpenRouter-Title":      "Telco Agent RL",
+                    "X-OpenRouter-Title": "Telco Agent RL",
                 },
             )
 
         elif self.provider == "anthropic":
             import anthropic
+
             return anthropic.Anthropic(api_key=api_key)
 
         elif self.provider == "google":
             import google.generativeai as genai
+
             genai.configure(api_key=api_key)
             return genai.GenerativeModel(self.model)
 
         elif self.provider == "together":
             from openai import OpenAI
+
             return OpenAI(
-                api_key  = api_key,
-                base_url = base_url or "https://api.together.xyz/v1",
+                api_key=api_key,
+                base_url=base_url or "https://api.together.xyz/v1",
             )
 
         elif self.provider == "mistral":
             from mistralai import Mistral
+
             return Mistral(api_key=api_key)
 
         else:
@@ -142,39 +151,39 @@ class _APIClient:
     # ── Completion call with verbose retry logging ────────────────────────────
 
     @retry(
-        stop         = stop_after_attempt(3),
-        wait         = wait_exponential(multiplier=1, min=2, max=30),
-        retry        = retry_if_exception_type(Exception),
-        reraise      = True,   # ← exposes real exception instead of RetryError wrapper
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,  # ← exposes real exception instead of RetryError wrapper
     )
     def complete(
         self,
-        system:      str,
-        user:        str,
+        system: str,
+        user: str,
         temperature: float = 0.9,
-        max_tokens:  int   = 1024,
+        max_tokens: int = 1024,
     ) -> str:
         """Single chat completion — returns assistant text."""
         try:
             if self.provider in ("openai", "together", "openrouter"):
                 resp = self._client.chat.completions.create(
-                    model       = self.model,
-                    messages    = [
+                    model=self.model,
+                    messages=[
                         {"role": "system", "content": system},
-                        {"role": "user",   "content": user},
+                        {"role": "user", "content": user},
                     ],
-                    temperature = temperature,
-                    max_tokens  = max_tokens,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                 )
                 return resp.choices[0].message.content
 
             elif self.provider == "anthropic":
                 resp = self._client.messages.create(
-                    model      = self.model,
-                    max_tokens = max_tokens,
-                    system     = system,
-                    messages   = [{"role": "user", "content": user}],
-                    temperature= temperature,
+                    model=self.model,
+                    max_tokens=max_tokens,
+                    system=system,
+                    messages=[{"role": "user", "content": user}],
+                    temperature=temperature,
                 )
                 return resp.content[0].text
 
@@ -184,13 +193,13 @@ class _APIClient:
 
             elif self.provider == "mistral":
                 resp = self._client.chat.complete(
-                    model    = self.model,
-                    messages = [
+                    model=self.model,
+                    messages=[
                         {"role": "system", "content": system},
-                        {"role": "user",   "content": user},
+                        {"role": "user", "content": user},
                     ],
-                    temperature = temperature,
-                    max_tokens  = max_tokens,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
                 )
                 return resp.choices[0].message.content
 
@@ -200,13 +209,15 @@ class _APIClient:
             # ── Print the real error before tenacity decides to retry ─────────
             # This is the line that was missing — without it, RetryError hides
             # the actual HTTP status, body, and message.
-            print(f"\n  [DEBUG] {self.provider} API error "
-                  f"(model={self.model}): {type(exc).__name__}: {exc}")
+            print(
+                f"\n  [DEBUG] {self.provider} API error "
+                f"(model={self.model}): {type(exc).__name__}: {exc}"
+            )
             if hasattr(exc, "status_code"):
                 print(f"  [DEBUG] HTTP status : {exc.status_code}")
             if hasattr(exc, "body"):
                 print(f"  [DEBUG] Error body  : {exc.body}")
-            raise   # let tenacity handle retry / reraise
+            raise  # let tenacity handle retry / reraise
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -393,6 +404,7 @@ Respond with a JSON array of exactly {n} objects:
 # Core generator
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class TelcoDatasetGenerator:
     """
     Generates GRPO‑ready training samples from separate train/test schema files.
@@ -423,28 +435,34 @@ class TelcoDatasetGenerator:
         seed: int = 42,
     ):
         self.train_library = train_function_library
-        self.test_library  = test_function_library
+        self.test_library = test_function_library
         self.train_func_names = list(train_function_library.keys())
-        self.test_func_names  = list(test_function_library.keys())
+        self.test_func_names = list(test_function_library.keys())
         # Union for retrieval simulation
-        self.all_func_names   = list(set(self.train_func_names + self.test_func_names))
+        self.all_func_names = list(set(self.train_func_names + self.test_func_names))
         self.max_workers = max_workers
         self.rpm = requests_per_minute
         self.temperature = temperature
         self.max_tokens = max_tokens
         random.seed(seed)
 
-        _key = api_key or os.getenv(f"{provider.upper()}_API_KEY") or os.getenv("LLM_API_KEY")
+        _key = (
+            api_key
+            or os.getenv(f"{provider.upper()}_API_KEY")
+            or os.getenv("LLM_API_KEY")
+        )
         if not _key:
             raise ValueError(
                 f"API key not found. Set the environment variable "
                 f"'{provider.upper()}_API_KEY' or pass api_key= explicitly."
             )
         self.client = _APIClient(provider, model, _key, base_url)
-        print(f"[DatasetGenerator] Provider={provider}  Model={model}  "
-              f"Train functions={len(self.train_func_names)}  "
-              f"Test functions={len(self.test_func_names)}  "
-              f"MaxWorkers={max_workers}  RPM={requests_per_minute}")
+        print(
+            f"[DatasetGenerator] Provider={provider}  Model={model}  "
+            f"Train functions={len(self.train_func_names)}  "
+            f"Test functions={len(self.test_func_names)}  "
+            f"MaxWorkers={max_workers}  RPM={requests_per_minute}"
+        )
 
     # ── factory methods ──────────────────────────────────────────────────────
 
@@ -514,13 +532,13 @@ class TelcoDatasetGenerator:
         """
         dist = workflow_distribution or {
             "single_call": 0.60,
-            "parallel":    0.20,
-            "sequential":  0.15,
-            "abstention":  0.05,
+            "parallel": 0.20,
+            "sequential": 0.15,
+            "abstention": 0.05,
         }
 
         train_funcs = self.train_func_names
-        test_funcs  = self.test_func_names
+        test_funcs = self.test_func_names
 
         print(f"[DatasetGenerator] Train functions : {len(train_funcs)}")
         print(f"[DatasetGenerator] Test  functions : {test_funcs}")
@@ -535,16 +553,22 @@ class TelcoDatasetGenerator:
 
         # ── 3. Generate samples per workflow ────────────────────────────────
         all_samples: list[DataSample] = []
-        all_samples += self._generate_single_calls(counts["single_call"],  train_funcs, split="train")
-        all_samples += self._generate_parallel(counts["parallel"],         train_funcs, split="train")
-        all_samples += self._generate_sequential(counts["sequential"],     train_funcs, split="train")
-        all_samples += self._generate_abstentions(counts["abstention"],    train_funcs, split="train")
+        all_samples += self._generate_single_calls(
+            counts["single_call"], train_funcs, split="train"
+        )
+        all_samples += self._generate_parallel(
+            counts["parallel"], train_funcs, split="train"
+        )
+        all_samples += self._generate_sequential(
+            counts["sequential"], train_funcs, split="train"
+        )
+        all_samples += self._generate_abstentions(
+            counts["abstention"], train_funcs, split="train"
+        )
 
         # ── 4. Generate test samples from held-out functions ─────────────────
         test_count = max(50, int(total * (1 - train_split)))
-        test_samples = self._generate_single_calls(
-            test_count, test_funcs, split="test"
-        )
+        test_samples = self._generate_single_calls(test_count, test_funcs, split="test")
 
         # ── 5. Assign splits + simulate retrieved functions ──────────────────
         random.shuffle(all_samples)
@@ -554,19 +578,23 @@ class TelcoDatasetGenerator:
         extra_test = all_samples[train_cut:]
         test_samples = test_samples + extra_test
 
-        for s in train_samples: s.split = "train"
-        for s in test_samples:  s.split = "test"
+        for s in train_samples:
+            s.split = "train"
+        for s in test_samples:
+            s.split = "test"
 
         self._simulate_retrieval(train_samples, k=5)
-        self._simulate_retrieval(test_samples,  k=5)
+        self._simulate_retrieval(test_samples, k=5)
 
         # ── 6. Save ──────────────────────────────────────────────────────────
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         self._save_jsonl(train_samples, out / "raw_train_dataset.jsonl")
-        self._save_jsonl(test_samples,  out / "raw_test_dataset.jsonl")
+        self._save_jsonl(test_samples, out / "raw_test_dataset.jsonl")
 
-        print(f"\n[DatasetGenerator] ✓  train={len(train_samples)}  test={len(test_samples)}")
+        print(
+            f"\n[DatasetGenerator] ✓  train={len(train_samples)}  test={len(test_samples)}"
+        )
         return train_samples, test_samples
 
     # ── workflow generators ───────────────────────────────────────────────────
@@ -583,18 +611,21 @@ class TelcoDatasetGenerator:
         remaining = count
         while remaining > 0:
             fn = random.choice(func_pool)
-            n  = min(batch_size, remaining)
+            n = min(batch_size, remaining)
             tasks.append((fn, n))
             remaining -= n
 
         samples: list[DataSample] = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {
-                pool.submit(self._call_single, fn, n): (fn, n)
-                for fn, n in tasks
+                pool.submit(self._call_single, fn, n): (fn, n) for fn, n in tasks
             }
-            for fut in tqdm(as_completed(futures), total=len(futures),
-                            desc="single_call", leave=False):
+            for fut in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="single_call",
+                leave=False,
+            ):
                 fn, _ = futures[fut]
                 try:
                     raw_list = fut.result()
@@ -608,25 +639,27 @@ class TelcoDatasetGenerator:
         self._rate_limit_wait(len(tasks))
         return samples
 
-    def _generate_parallel(self, count: int, func_pool: list[str], split: str = "train") -> list[DataSample]:
+    def _generate_parallel(
+        self, count: int, func_pool: list[str], split: str = "train"
+    ) -> list[DataSample]:
         """Generate parallel multi-call samples."""
         tasks: list[tuple[list[str], int]] = []
         remaining = count
         while remaining > 0:
             n_funcs = random.randint(2, min(4, len(func_pool)))
-            chosen  = random.sample(func_pool, n_funcs)
-            n       = min(3, remaining)
+            chosen = random.sample(func_pool, n_funcs)
+            n = min(3, remaining)
             tasks.append((chosen, n))
             remaining -= n
 
         samples: list[DataSample] = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {
-                pool.submit(self._call_parallel, fns, n): fns
-                for fns, n in tasks
+                pool.submit(self._call_parallel, fns, n): fns for fns, n in tasks
             }
-            for fut in tqdm(as_completed(futures), total=len(futures),
-                            desc="parallel", leave=False):
+            for fut in tqdm(
+                as_completed(futures), total=len(futures), desc="parallel", leave=False
+            ):
                 fns = futures[fut]
                 try:
                     for raw in fut.result():
@@ -638,25 +671,30 @@ class TelcoDatasetGenerator:
 
         return samples
 
-    def _generate_sequential(self, count: int, func_pool: list[str], split: str = "train") -> list[DataSample]:
+    def _generate_sequential(
+        self, count: int, func_pool: list[str], split: str = "train"
+    ) -> list[DataSample]:
         """Generate sequential / chained call samples."""
         tasks: list[tuple[list[str], int]] = []
         remaining = count
         while remaining > 0:
             n_funcs = random.randint(2, min(3, len(func_pool)))
-            chosen  = random.sample(func_pool, n_funcs)
-            n       = min(3, remaining)
+            chosen = random.sample(func_pool, n_funcs)
+            n = min(3, remaining)
             tasks.append((chosen, n))
             remaining -= n
 
         samples: list[DataSample] = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {
-                pool.submit(self._call_sequential, fns, n): fns
-                for fns, n in tasks
+                pool.submit(self._call_sequential, fns, n): fns for fns, n in tasks
             }
-            for fut in tqdm(as_completed(futures), total=len(futures),
-                            desc="sequential", leave=False):
+            for fut in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="sequential",
+                leave=False,
+            ):
                 fns = futures[fut]
                 try:
                     for raw in fut.result():
@@ -668,25 +706,30 @@ class TelcoDatasetGenerator:
 
         return samples
 
-    def _generate_abstentions(self, count: int, func_pool: list[str], split: str = "train") -> list[DataSample]:
+    def _generate_abstentions(
+        self, count: int, func_pool: list[str], split: str = "train"
+    ) -> list[DataSample]:
         """Generate refusal / abstention samples."""
         tasks: list[tuple[list[str], int]] = []
         remaining = count
         while remaining > 0:
             n_funcs = random.randint(1, min(3, len(func_pool)))
-            chosen  = random.sample(func_pool, n_funcs)
-            n       = min(3, remaining)
+            chosen = random.sample(func_pool, n_funcs)
+            n = min(3, remaining)
             tasks.append((chosen, n))
             remaining -= n
 
         samples: list[DataSample] = []
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {
-                pool.submit(self._call_abstention, fns, n): fns
-                for fns, n in tasks
+                pool.submit(self._call_abstention, fns, n): fns for fns, n in tasks
             }
-            for fut in tqdm(as_completed(futures), total=len(futures),
-                            desc="abstention", leave=False):
+            for fut in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc="abstention",
+                leave=False,
+            ):
                 fns = futures[fut]
                 try:
                     for raw in fut.result():
@@ -721,8 +764,9 @@ class TelcoDatasetGenerator:
             schema=self._schema_str(func_name),
             n=n,
         )
-        text = self.client.complete(SYSTEM_PROMPT, prompt,
-                                    self.temperature, self.max_tokens)
+        text = self.client.complete(
+            SYSTEM_PROMPT, prompt, self.temperature, self.max_tokens
+        )
         return self._parse_json_list(text)
 
     def _call_parallel(self, func_names: list[str], n: int) -> list[dict]:
@@ -730,8 +774,9 @@ class TelcoDatasetGenerator:
             schemas=self._schemas_str(func_names),
             n=n,
         )
-        text = self.client.complete(SYSTEM_PROMPT, prompt,
-                                    self.temperature, self.max_tokens)
+        text = self.client.complete(
+            SYSTEM_PROMPT, prompt, self.temperature, self.max_tokens
+        )
         return self._parse_json_list(text)
 
     def _call_sequential(self, func_names: list[str], n: int) -> list[dict]:
@@ -739,8 +784,9 @@ class TelcoDatasetGenerator:
             schemas=self._schemas_str(func_names),
             n=n,
         )
-        text = self.client.complete(SYSTEM_PROMPT, prompt,
-                                    self.temperature, self.max_tokens)
+        text = self.client.complete(
+            SYSTEM_PROMPT, prompt, self.temperature, self.max_tokens
+        )
         return self._parse_json_list(text)
 
     def _call_abstention(self, func_names: list[str], n: int) -> list[dict]:
@@ -748,8 +794,9 @@ class TelcoDatasetGenerator:
             schemas=self._schemas_str(func_names),
             n=n,
         )
-        text = self.client.complete(SYSTEM_PROMPT, prompt,
-                                    self.temperature, self.max_tokens)
+        text = self.client.complete(
+            SYSTEM_PROMPT, prompt, self.temperature, self.max_tokens
+        )
         return self._parse_json_list(text)
 
     # ── parsers ───────────────────────────────────────────────────────────────
@@ -768,7 +815,7 @@ class TelcoDatasetGenerator:
         except json.JSONDecodeError:
             # try to find JSON array via bracket matching
             start = text.find("[")
-            end   = text.rfind("]") + 1
+            end = text.rfind("]") + 1
             if start != -1 and end > start:
                 try:
                     return json.loads(text[start:end])
@@ -778,7 +825,7 @@ class TelcoDatasetGenerator:
 
     def _parse_single(self, raw: dict, func_name: str, split: str) -> DataSample | None:
         query = raw.get("query", "").strip()
-        call  = raw.get("function_call")
+        call = raw.get("function_call")
         if not query or not call:
             return None
         return DataSample(
@@ -787,16 +834,18 @@ class TelcoDatasetGenerator:
             workflow_type="single_call",
             function_name=func_name,
             ground_truth={
-                "function":  call.get("function", func_name),
+                "function": call.get("function", func_name),
                 "arguments": call.get("arguments", {}),
-                "workflow":  "single_call",
+                "workflow": "single_call",
                 "reasoning": raw.get("reasoning", ""),
             },
             retrieved_functions=[],
             split=split,
         )
 
-    def _parse_parallel(self, raw: dict, func_names: list[str], split: str = "train") -> DataSample | None:
+    def _parse_parallel(
+        self, raw: dict, func_names: list[str], split: str = "train"
+    ) -> DataSample | None:
         query = raw.get("query", "").strip()
         calls = raw.get("function_calls", [])
         if not query or not calls:
@@ -808,17 +857,19 @@ class TelcoDatasetGenerator:
             workflow_type="parallel",
             function_name=primary,
             ground_truth={
-                "function":  primary,
+                "function": primary,
                 "arguments": calls[0].get("arguments", {}) if calls else {},
-                "workflow":  "parallel",
-                "calls":     calls,
+                "workflow": "parallel",
+                "calls": calls,
                 "reasoning": raw.get("reasoning", ""),
             },
             retrieved_functions=[],
             split=split,
         )
 
-    def _parse_sequential(self, raw: dict, func_names: list[str], split: str = "train") -> DataSample | None:
+    def _parse_sequential(
+        self, raw: dict, func_names: list[str], split: str = "train"
+    ) -> DataSample | None:
         query = raw.get("query", "").strip()
         calls = raw.get("function_calls", [])
         if not query or not calls:
@@ -830,17 +881,19 @@ class TelcoDatasetGenerator:
             workflow_type="sequential",
             function_name=first_call.get("function", func_names[0]),
             ground_truth={
-                "function":  first_call.get("function", func_names[0]),
+                "function": first_call.get("function", func_names[0]),
                 "arguments": first_call.get("arguments", {}),
-                "workflow":  "sequential",
-                "calls":     calls,
+                "workflow": "sequential",
+                "calls": calls,
                 "reasoning": raw.get("reasoning", ""),
             },
             retrieved_functions=[],
             split=split,
         )
 
-    def _parse_abstention(self, raw: dict, func_names: list[str], split: str = "train") -> DataSample | None:
+    def _parse_abstention(
+        self, raw: dict, func_names: list[str], split: str = "train"
+    ) -> DataSample | None:
         query = raw.get("query", "").strip()
         if not query:
             return None
@@ -850,11 +903,11 @@ class TelcoDatasetGenerator:
             workflow_type="abstention",
             function_name="none",
             ground_truth={
-                "function":       None,
-                "arguments":      {},
-                "workflow":       "abstention",
+                "function": None,
+                "arguments": {},
+                "workflow": "abstention",
                 "refusal_message": raw.get("refusal_message", ""),
-                "reasoning":      raw.get("reasoning", ""),
+                "reasoning": raw.get("reasoning", ""),
             },
             retrieved_functions=[],
             split=split,
@@ -871,8 +924,14 @@ class TelcoDatasetGenerator:
         for s in samples:
             true_fn = s.function_name
             distractors = [fn for fn in self.all_func_names if fn != true_fn]
-            chosen_distractors = random.sample(distractors, min(k - 1, len(distractors)))
-            pool = ([true_fn] + chosen_distractors) if true_fn != "none" else chosen_distractors
+            chosen_distractors = random.sample(
+                distractors, min(k - 1, len(distractors))
+            )
+            pool = (
+                ([true_fn] + chosen_distractors)
+                if true_fn != "none"
+                else chosen_distractors
+            )
             random.shuffle(pool)
             s.retrieved_functions = pool[:k]
 

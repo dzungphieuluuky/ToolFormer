@@ -48,11 +48,16 @@ import torch
 from trl import GRPOTrainer
 
 from .base_trainer import (
-    load_model, build_grpo_config, load_grpo_dataset, SYSTEM_PROMPT
+    load_model,
+    build_grpo_config,
+    load_grpo_dataset,
+    SYSTEM_PROMPT,
 )
 from src.reward.rc_grpo_reward import (
-    HIGH_REWARD_TOKEN, LOW_REWARD_TOKEN,
-    rc_grpo_reward_func, rc_grpo_format_func,
+    HIGH_REWARD_TOKEN,
+    LOW_REWARD_TOKEN,
+    rc_grpo_reward_func,
+    rc_grpo_format_func,
 )
 from src.utils.logging_utils import get_logger
 
@@ -63,12 +68,13 @@ logger = get_logger(__name__)
 # Reward-token injection (Phase 2: diverse token sampling within each group)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def inject_diverse_reward_tokens(
     dataset,
-    num_generations:    int   = 8,
-    high_token:         str   = HIGH_REWARD_TOKEN,
-    low_token:          str   = LOW_REWARD_TOKEN,
-    high_fraction:      float = 0.5,
+    num_generations: int = 8,
+    high_token: str = HIGH_REWARD_TOKEN,
+    low_token: str = LOW_REWARD_TOKEN,
+    high_fraction: float = 0.5,
 ) -> Any:
     """
     For each prompt, pre-assign a reward token schedule so that within
@@ -84,7 +90,7 @@ def inject_diverse_reward_tokens(
     is applied, matching the RCTP-FT training format exactly.
     """
     n_high = max(1, round(num_generations * high_fraction))
-    n_low  = num_generations - n_high
+    n_low = num_generations - n_high
 
     def _add_token(example):
         # Deterministic assignment based on sample index within its group.
@@ -95,7 +101,7 @@ def inject_diverse_reward_tokens(
         # randomly assign at dataset-map time; within a batch the mix
         # will statistically approximate 50/50.
         token = high_token if random.random() < high_fraction else low_token
-        example["prompt"]       = token + "\n" + example["prompt"]
+        example["prompt"] = token + "\n" + example["prompt"]
         example["reward_token"] = token
         return example
 
@@ -105,6 +111,7 @@ def inject_diverse_reward_tokens(
 # ──────────────────────────────────────────────────────────────────────────────
 # RC-GRPO Trainer
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class RCGRPOTrainer(GRPOTrainer):
     """
@@ -125,8 +132,8 @@ class RCGRPOTrainer(GRPOTrainer):
         Must be done BEFORE RCTP-FT so both phases use the same vocabulary.
         """
         new_tokens = [HIGH_REWARD_TOKEN, LOW_REWARD_TOKEN]
-        existing   = set(tokenizer.additional_special_tokens)
-        to_add     = [t for t in new_tokens if t not in existing]
+        existing = set(tokenizer.additional_special_tokens)
+        to_add = [t for t in new_tokens if t not in existing]
         if to_add:
             tokenizer.add_special_tokens({"additional_special_tokens": to_add})
             logger.info(f"[RC-GRPO] Registered special tokens: {to_add}")
@@ -138,6 +145,7 @@ class RCGRPOTrainer(GRPOTrainer):
 # Main training function
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def train_rc_grpo(config: dict) -> None:
     """
     Full RC-GRPO Phase-2 training.
@@ -146,19 +154,20 @@ def train_rc_grpo(config: dict) -> None:
     If sft_model_path is set in config, loads the RCTP checkpoint.
     Otherwise starts from base model (not recommended for best results).
     """
-    rc_cfg   = config.get("rc_grpo", {})
-    data_cfg = config.get("data",    {})
-    train_cfg= config.get("training",{})
+    rc_cfg = config.get("rc_grpo", {})
+    data_cfg = config.get("data", {})
+    train_cfg = config.get("training", {})
 
     # ── 1. Load model (from RCTP-FT checkpoint if available) ─────────────────
     sft_path = train_cfg.get("sft_model_path")
     if sft_path and Path(sft_path).exists():
         logger.info(f"[RC-GRPO] Loading RCTP-FT checkpoint: {sft_path}")
         from src.utils.model_utils import load_model_from_path
+
         model, tokenizer = load_model_from_path(
             sft_path,
-            base_model_name = config["model"]["name"],
-            max_seq_length  = config["model"]["max_seq_length"],
+            base_model_name=config["model"]["name"],
+            max_seq_length=config["model"]["max_seq_length"],
         )
     else:
         logger.warning("[RC-GRPO] No RCTP-FT checkpoint found — using base model.")
@@ -178,28 +187,30 @@ def train_rc_grpo(config: dict) -> None:
     num_gen = config.get("training", {}).get("num_generations", 8)
     dataset = inject_diverse_reward_tokens(
         dataset,
-        num_generations  = num_gen,
-        high_fraction    = rc_cfg.get("high_fraction", 0.5),
+        num_generations=num_gen,
+        high_fraction=rc_cfg.get("high_fraction", 0.5),
     )
-    logger.info(f"[RC-GRPO] Reward tokens injected (high_fraction="
-                f"{rc_cfg.get('high_fraction', 0.5)}).")
+    logger.info(
+        f"[RC-GRPO] Reward tokens injected (high_fraction="
+        f"{rc_cfg.get('high_fraction', 0.5)})."
+    )
 
     # ── 5. Build GRPOConfig ───────────────────────────────────────────────────
     grpo_args = build_grpo_config(
         config,
-        output_dir = train_cfg.get("output_dir", "outputs/rc_grpo_model"),
+        output_dir=train_cfg.get("output_dir", "outputs/rc_grpo_model"),
     )
 
     # ── 6. Trainer ────────────────────────────────────────────────────────────
     trainer = RCGRPOTrainer(
-        model            = model,
-        processing_class = tokenizer,
-        reward_funcs     = [
-            rc_grpo_reward_func,   # binary verifiable outcome reward
-            rc_grpo_format_func,   # format reward (XML tags)
+        model=model,
+        processing_class=tokenizer,
+        reward_funcs=[
+            rc_grpo_reward_func,  # binary verifiable outcome reward
+            rc_grpo_format_func,  # format reward (XML tags)
         ],
-        args             = grpo_args,
-        train_dataset    = dataset,
+        args=grpo_args,
+        train_dataset=dataset,
     )
 
     logger.info("[RC-GRPO] Starting RL training (Phase 2)...")

@@ -123,11 +123,12 @@ from .base_reward import (
 # Step-level process reward
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def process_reward_step(
-    call:               dict,
-    ground_truth:       dict,
+    call: dict,
+    ground_truth: dict,
     sandbox=None,
-    args_threshold:     float = 0.8,
+    args_threshold: float = 0.8,
 ) -> float:
     """
     Binary process-verifiable reward for ONE step (one <call> block).
@@ -155,6 +156,7 @@ def process_reward_step(
     # Gate 4: execution (optional)
     if sandbox is not None:
         from src.utils.sandbox import Sandbox
+
         if not sandbox.execute(call):
             return 0.0
 
@@ -165,8 +167,9 @@ def process_reward_step(
 # Outcome reward (trajectory-level)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def outcome_reward(
-    response:     str,
+    response: str,
     ground_truth: dict,
     sandbox=None,
     args_threshold: float = 0.8,
@@ -193,9 +196,10 @@ def outcome_reward(
 # Process shaping term φ(s_t, a_t) per trajectory
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def compute_process_shaping(
-    response:       str,
-    ground_truth:   dict,
+    response: str,
+    ground_truth: dict,
     sandbox=None,
     args_threshold: float = 0.8,
 ) -> list[float]:
@@ -230,7 +234,7 @@ def compute_process_shaping(
 
     # Centre within the trajectory: φ(t) = r_proc(t) − μ_proc
     mu_proc = sum(step_rewards) / len(step_rewards)
-    phi     = [r - mu_proc for r in step_rewards]
+    phi = [r - mu_proc for r in step_rewards]
 
     return phi
 
@@ -238,6 +242,7 @@ def compute_process_shaping(
 # ──────────────────────────────────────────────────────────────────────────────
 # Token-level advantage assignment
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @dataclass
 class GVPOTokenAdvantages:
@@ -251,21 +256,22 @@ class GVPOTokenAdvantages:
     step_phis           : list[float] — one φ value per <call> block
     step_process_rewards: list[float] — raw r_proc before centering
     """
-    outcome_advantage:    float
-    per_token_shaped:     torch.Tensor           # shape [seq_len]
-    step_phis:            list[float]
+
+    outcome_advantage: float
+    per_token_shaped: torch.Tensor  # shape [seq_len]
+    step_phis: list[float]
     step_process_rewards: list[float]
 
 
 def build_per_token_advantages(
-    response:         str,
+    response: str,
     tokenizer,
-    outcome_adv:      float,
-    ground_truth:     dict,
+    outcome_adv: float,
+    ground_truth: dict,
     sandbox=None,
-    shaping_coeff:    float = 1.0,
-    args_threshold:   float = 0.8,
-    max_seq_len:      int   = 512,
+    shaping_coeff: float = 1.0,
+    args_threshold: float = 0.8,
+    max_seq_len: int = 512,
 ) -> GVPOTokenAdvantages:
     """
     Build the full per-token shaped advantage tensor for one response.
@@ -296,8 +302,7 @@ def build_per_token_advantages(
     # Raw process rewards for logging/debugging
     calls = extract_all_calls(response)
     raw_proc = [
-        process_reward_step(c, ground_truth, sandbox, args_threshold)
-        for c in calls
+        process_reward_step(c, ground_truth, sandbox, args_threshold) for c in calls
     ]
 
     # Initialise per-token advantages to Â_i (outcome-only, like GRPO)
@@ -306,10 +311,10 @@ def build_per_token_advantages(
     if not phi_list:
         # No calls found — all tokens get outcome advantage only
         return GVPOTokenAdvantages(
-            outcome_advantage    = outcome_adv,
-            per_token_shaped     = per_token,
-            step_phis            = [],
-            step_process_rewards = [],
+            outcome_advantage=outcome_adv,
+            per_token_shaped=per_token,
+            step_phis=[],
+            step_process_rewards=[],
         )
 
     # Map <call> character spans → token positions
@@ -320,10 +325,10 @@ def build_per_token_advantages(
     except Exception:
         # Fallback: if tokenisation mapping fails, use outcome advantage only
         return GVPOTokenAdvantages(
-            outcome_advantage    = outcome_adv,
-            per_token_shaped     = per_token,
-            step_phis            = phi_list,
-            step_process_rewards = raw_proc,
+            outcome_advantage=outcome_adv,
+            per_token_shaped=per_token,
+            step_phis=phi_list,
+            step_process_rewards=raw_proc,
         )
 
     # Apply shaping: tokens in <call> block t → Â_i + b · φ(t)
@@ -334,15 +339,15 @@ def build_per_token_advantages(
         per_token[tok_start:tok_end] = shaped_value
 
     return GVPOTokenAdvantages(
-        outcome_advantage    = outcome_adv,
-        per_token_shaped     = per_token,
-        step_phis            = phi_list,
-        step_process_rewards = raw_proc,
+        outcome_advantage=outcome_adv,
+        per_token_shaped=per_token,
+        step_phis=phi_list,
+        step_process_rewards=raw_proc,
     )
 
 
 def _find_call_token_spans(
-    response:    str,
+    response: str,
     tokenizer,
     max_seq_len: int,
 ) -> list[tuple[int, int]]:
@@ -355,21 +360,21 @@ def _find_call_token_spans(
     # Tokenise with offset mapping
     enc = tokenizer(
         response,
-        return_offsets_mapping = True,
-        truncation             = True,
-        max_length             = max_seq_len,
-        add_special_tokens     = False,
+        return_offsets_mapping=True,
+        truncation=True,
+        max_length=max_seq_len,
+        add_special_tokens=False,
     )
-    offsets = enc["offset_mapping"]   # list of (char_start, char_end) per token
+    offsets = enc["offset_mapping"]  # list of (char_start, char_end) per token
 
     spans: list[tuple[int, int]] = []
 
     for match in _CALL_RE.finditer(response):
-        char_start = match.start()   # position of '<' in '<call>'
-        char_end   = match.end()     # position after '>' in '</call>'
+        char_start = match.start()  # position of '<' in '<call>'
+        char_end = match.end()  # position after '>' in '</call>'
 
         tok_start = None
-        tok_end   = None
+        tok_end = None
         for tok_idx, (off_s, off_e) in enumerate(offsets):
             if tok_start is None and off_e > char_start:
                 tok_start = tok_idx
@@ -386,8 +391,9 @@ def _find_call_token_spans(
 # TRL-compatible reward wrapper
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def gvpo_reward_func(
-    completions:  list[str],
+    completions: list[str],
     ground_truth: list[dict] | None = None,
     **kwargs,
 ) -> list[float]:

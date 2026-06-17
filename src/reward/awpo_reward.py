@@ -62,16 +62,20 @@ from __future__ import annotations
 
 import math
 from .base_reward import (
-    func_selection_ok, args_accuracy, schema_valid,
-    format_reward, reasoning_quality
+    func_selection_ok,
+    args_accuracy,
+    schema_valid,
+    format_reward,
+    reasoning_quality,
 )
 
 
 # ── Outcome reward ────────────────────────────────────────────────────────────
 
+
 def _outcome_reward(
-    response:        str,
-    ground_truth:    dict,
+    response: str,
+    ground_truth: dict,
     sandbox,
     outcome_weights: dict,
 ) -> float:
@@ -79,33 +83,36 @@ def _outcome_reward(
     Weighted sum of verifiable outcome components.
     Default weights from paper ablation (Table 4): equal-weight components.
     """
-    fn_ok    = func_selection_ok(response, ground_truth.get("function", ""))
-    args_ok  = args_accuracy(response, ground_truth.get("arguments", {}))
+    fn_ok = func_selection_ok(response, ground_truth.get("function", ""))
+    args_ok = args_accuracy(response, ground_truth.get("arguments", {}))
 
     if sandbox is not None:
         from src.utils.sandbox import Sandbox
+
         exec_ok = 1.0 if sandbox.execute(response) else 0.0
     else:
         exec_ok = schema_valid(response)
 
     return (
         outcome_weights["func_selection"] * fn_ok
-        + outcome_weights["args_accuracy"]  * args_ok
-        + outcome_weights["execution"]      * exec_ok
+        + outcome_weights["args_accuracy"] * args_ok
+        + outcome_weights["execution"] * exec_ok
     )
 
 
 # ── Group-level statistics ────────────────────────────────────────────────────
 
+
 def compute_group_stats(rewards: list[float]) -> dict:
-    n    = len(rewards)
+    n = len(rewards)
     mean = sum(rewards) / n
-    var  = sum((r - mean) ** 2 for r in rewards) / n
-    std  = math.sqrt(var)
+    var = sum((r - mean) ** 2 for r in rewards) / n
+    std = math.sqrt(var)
     return {"mean": mean, "var": var, "std": std}
 
 
 # ── Variance-aware gate  (Eq. 23) ─────────────────────────────────────────────
+
 
 def variance_gate(sigma2_out: float, tau: float = 0.5) -> float:
     """
@@ -117,6 +124,7 @@ def variance_gate(sigma2_out: float, tau: float = 0.5) -> float:
 
 
 # ── Difficulty-aware weight  (Eq. 22) ─────────────────────────────────────────
+
 
 def difficulty_weight(mu_out: float) -> float:
     """
@@ -130,11 +138,12 @@ def difficulty_weight(mu_out: float) -> float:
 
 # ── Full AWPO advantage computation for a group ───────────────────────────────
 
+
 def awpo_group_advantages(
-    outcome_rewards:   list[float],
+    outcome_rewards: list[float],
     reasoning_rewards: list[float],
-    tau:               float = 0.5,
-    eps:               float = 1e-8,
+    tau: float = 0.5,
+    eps: float = 1e-8,
 ) -> tuple[list[float], float]:
     """
     Compute AWPO advantages for one rollout group.
@@ -158,8 +167,8 @@ def awpo_group_advantages(
 
     # ── Step 1: group statistics on outcome rewards ───────────────────────────
     out_stats = compute_group_stats(outcome_rewards)
-    mu_out    = out_stats["mean"]
-    sigma2_out= out_stats["var"]
+    mu_out = out_stats["mean"]
+    sigma2_out = out_stats["var"]
 
     # ── Step 2: variance-aware gate (shared for the whole group) ─────────────
     g = variance_gate(sigma2_out, tau)
@@ -175,14 +184,11 @@ def awpo_group_advantages(
 
     # ── Step 5: normalise mixed rewards within the group ─────────────────────
     mix_stats = compute_group_stats(mixed)
-    mu_mix    = mix_stats["mean"]
-    std_mix   = mix_stats["std"]
+    mu_mix = mix_stats["mean"]
+    std_mix = mix_stats["std"]
 
     # ── Step 6: weighted, normalised advantages ───────────────────────────────
-    advantages = [
-        w * (r - mu_mix) / (std_mix + eps)
-        for r in mixed
-    ]
+    advantages = [w * (r - mu_mix) / (std_mix + eps) for r in mixed]
 
     # ── Step 7: adaptive clip expansion factor ────────────────────────────────
     # When reasoning gate is open (g=1), clip window widens by δ=0.2
@@ -194,13 +200,14 @@ def awpo_group_advantages(
 
 # ── Per-response AWPO reward (single call, used in TRL wrapper) ──────────────
 
+
 def awpo_reward(
-    response:        str,
-    ground_truth:    dict,
+    response: str,
+    ground_truth: dict,
     sandbox=None,
-    group_stats:     dict | None = None,
+    group_stats: dict | None = None,
     outcome_weights: dict | None = None,
-    tau:             float = 0.5,
+    tau: float = 0.5,
 ) -> float:
     """
     Returns the scalar mixed reward for a single response.
@@ -214,26 +221,27 @@ def awpo_reward(
     """
     ow = outcome_weights or {
         "func_selection": 0.4,
-        "args_accuracy":  0.3,
-        "execution":      0.3,
+        "args_accuracy": 0.3,
+        "execution": 0.3,
     }
 
-    r_out    = _outcome_reward(response, ground_truth, sandbox, ow)
+    r_out = _outcome_reward(response, ground_truth, sandbox, ow)
     r_reason = reasoning_quality(response)
 
     if group_stats is None:
-        return r_out   # no group context yet → return pure outcome
+        return r_out  # no group context yet → return pure outcome
 
     sigma2_out = group_stats.get("var", 1.0)
-    g          = variance_gate(sigma2_out, tau)
+    g = variance_gate(sigma2_out, tau)
 
     return (1.0 - g) * r_out + g * r_reason
 
 
 # ── TRL-compatible wrapper ────────────────────────────────────────────────────
 
+
 def awpo_reward_func(
-    completions:  list[str],
+    completions: list[str],
     ground_truth: list[dict] | None = None,
     **kwargs,
 ) -> list[float]:
@@ -250,14 +258,13 @@ def awpo_reward_func(
 
     outcome_weights = {
         "func_selection": 0.4,
-        "args_accuracy":  0.3,
-        "execution":      0.3,
+        "args_accuracy": 0.3,
+        "execution": 0.3,
     }
 
     # Compute raw outcome rewards for all completions
     out_rewards = [
-        _outcome_reward(c, gt if isinstance(gt, dict) else {},
-                        None, outcome_weights)
+        _outcome_reward(c, gt if isinstance(gt, dict) else {}, None, outcome_weights)
         for c, gt in zip(completions, ground_truth)
     ]
     return out_rewards

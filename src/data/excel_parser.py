@@ -18,6 +18,7 @@ import pandas as pd
 # Internal helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _safe_json(value: str, fallback=None):
     """Parse a JSON string; return fallback on any error."""
     if not isinstance(value, str) or not value.strip():
@@ -45,6 +46,7 @@ def _safe_list(value: str) -> list:
 # ──────────────────────────────────────────────────────────────────────────────
 # Public API
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def parse_telecom_functions(
     excel_path: str,

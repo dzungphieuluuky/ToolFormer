@@ -35,26 +35,30 @@ import numpy as np
 # Data structures
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class ValueMatch:
     """A single matched argument value."""
-    code:  str             # the actual argument value to put in the function call
-    label: str             # human-readable name
-    group: str             # catalog group (e.g. "Tỉnh/Thành phố", "technology")
-    score: float = 0.0     # relevance score (higher = more relevant)
-    alt_label: str = ""    # alternative label if present
+
+    code: str  # the actual argument value to put in the function call
+    label: str  # human-readable name
+    group: str  # catalog group (e.g. "Tỉnh/Thành phố", "technology")
+    score: float = 0.0  # relevance score (higher = more relevant)
+    alt_label: str = ""  # alternative label if present
 
 
 @dataclass
 class RetrievalResult:
     """Complete output of TelcoRetriever.retrieve()."""
-    function_names:  list[str]                       # top-k function names
-    argument_values: dict[str, list[ValueMatch]]     # param_name → matches
+
+    function_names: list[str]  # top-k function names
+    argument_values: dict[str, list[ValueMatch]]  # param_name → matches
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage 1 — Function Retriever (unchanged logic, clean rewrite)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class FunctionRetriever:
     """
@@ -65,17 +69,17 @@ class FunctionRetriever:
     def __init__(
         self,
         function_library: dict,
-        method:           Literal["bm25", "embedding", "hybrid"] = "hybrid",
-        encoder_model:    str   = "sentence-transformers/all-MiniLM-L6-v2",
-        bm25_weight:      float = 0.4,
-        emb_weight:       float = 0.6,
-        index_dir:        str | None = None,
+        method: Literal["bm25", "embedding", "hybrid"] = "hybrid",
+        encoder_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+        bm25_weight: float = 0.4,
+        emb_weight: float = 0.6,
+        index_dir: str | None = None,
     ):
-        self.library     = function_library
-        self.method      = method
-        self.func_names  = list(function_library.keys())
+        self.library = function_library
+        self.method = method
+        self.func_names = list(function_library.keys())
         self.bm25_weight = bm25_weight
-        self.emb_weight  = emb_weight
+        self.emb_weight = emb_weight
 
         # Rich description: name + description + parameter names
         self.desc_list = [
@@ -83,8 +87,8 @@ class FunctionRetriever:
             for name, schema in function_library.items()
         ]
 
-        self._bm25       = None
-        self._encoder    = None
+        self._bm25 = None
+        self._encoder = None
         self._embeddings = None
 
         if method in ("bm25", "hybrid"):
@@ -109,12 +113,14 @@ class FunctionRetriever:
 
     def _init_bm25(self) -> None:
         from rank_bm25 import BM25Okapi
-        tokenized   = [d.lower().split() for d in self.desc_list]
-        self._bm25  = BM25Okapi(tokenized)
+
+        tokenized = [d.lower().split() for d in self.desc_list]
+        self._bm25 = BM25Okapi(tokenized)
         print("[FunctionRetriever] BM25 index built.")
 
     def _init_embeddings(self, model_name: str, index_dir: str | None) -> None:
         from sentence_transformers import SentenceTransformer
+
         self._encoder = SentenceTransformer(model_name)
         cache = Path(index_dir) / "func_embeddings.npy" if index_dir else None
         if cache and cache.exists():
@@ -123,9 +129,9 @@ class FunctionRetriever:
         else:
             self._embeddings = self._encoder.encode(
                 self.desc_list,
-                convert_to_numpy    = True,
-                normalize_embeddings= True,
-                show_progress_bar   = True,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=True,
             )
             if cache:
                 cache.parent.mkdir(parents=True, exist_ok=True)
@@ -133,13 +139,13 @@ class FunctionRetriever:
                 print(f"[FunctionRetriever] Embeddings saved → {cache}")
 
     def retrieve(self, query: str, k: int = 5) -> list[str]:
-        scores  = self._score(query)
-        top_k   = np.argsort(scores)[-k:][::-1]
+        scores = self._score(query)
+        top_k = np.argsort(scores)[-k:][::-1]
         return [self.func_names[i] for i in top_k]
 
     def retrieve_with_scores(self, query: str, k: int = 5) -> list[tuple[str, float]]:
         scores = self._score(query)
-        top_k  = np.argsort(scores)[-k:][::-1]
+        top_k = np.argsort(scores)[-k:][::-1]
         return [(self.func_names[i], float(scores[i])) for i in top_k]
 
     def _score(self, query: str) -> np.ndarray:
@@ -149,7 +155,7 @@ class FunctionRetriever:
             return self._emb_scores(query)
         else:
             bm25 = self._minmax(self._bm25_scores(query))
-            emb  = self._minmax(self._emb_scores(query))
+            emb = self._minmax(self._emb_scores(query))
             return self.bm25_weight * bm25 + self.emb_weight * emb
 
     def _bm25_scores(self, query: str) -> np.ndarray:
@@ -171,12 +177,12 @@ class FunctionRetriever:
 
     def save(self, path: str) -> None:
         state = {
-            "func_names":  self.func_names,
-            "desc_list":   self.desc_list,
-            "method":      self.method,
+            "func_names": self.func_names,
+            "desc_list": self.desc_list,
+            "method": self.method,
             "bm25_weight": self.bm25_weight,
-            "emb_weight":  self.emb_weight,
-            "embeddings":  self._embeddings,
+            "emb_weight": self.emb_weight,
+            "embeddings": self._embeddings,
         }
         with open(path, "wb") as fh:
             pickle.dump(state, fh)
@@ -185,26 +191,27 @@ class FunctionRetriever:
     @classmethod
     def load(
         cls,
-        path:             str,
+        path: str,
         function_library: dict,
-        encoder_model:    str = "sentence-transformers/all-MiniLM-L6-v2",
+        encoder_model: str = "sentence-transformers/all-MiniLM-L6-v2",
     ) -> "FunctionRetriever":
         with open(path, "rb") as fh:
             state = pickle.load(fh)
         obj = cls.__new__(cls)
-        obj.library      = function_library
-        obj.func_names   = state["func_names"]
-        obj.desc_list    = state["desc_list"]
-        obj.method       = state["method"]
-        obj.bm25_weight  = state["bm25_weight"]
-        obj.emb_weight   = state["emb_weight"]
-        obj._embeddings  = state["embeddings"]
-        obj._bm25        = None
-        obj._encoder     = None
+        obj.library = function_library
+        obj.func_names = state["func_names"]
+        obj.desc_list = state["desc_list"]
+        obj.method = state["method"]
+        obj.bm25_weight = state["bm25_weight"]
+        obj.emb_weight = state["emb_weight"]
+        obj._embeddings = state["embeddings"]
+        obj._bm25 = None
+        obj._encoder = None
         if obj.method in ("bm25", "hybrid"):
             obj._init_bm25()
         if obj.method in ("embedding", "hybrid"):
             from sentence_transformers import SentenceTransformer
+
             obj._encoder = SentenceTransformer(encoder_model)
         return obj
 
@@ -212,6 +219,7 @@ class FunctionRetriever:
 # ──────────────────────────────────────────────────────────────────────────────
 # Stage 2 — Argument Value Retriever
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class ArgumentValueRetriever:
     """
@@ -233,10 +241,10 @@ class ArgumentValueRetriever:
 
     def __init__(
         self,
-        argument_values: dict,   # loaded from argument_values.json
-        top_k_values:    int = 3,
+        argument_values: dict,  # loaded from argument_values.json
+        top_k_values: int = 3,
     ):
-        self.catalog      = argument_values   # param_name → list[dict]
+        self.catalog = argument_values  # param_name → list[dict]
         self.top_k_values = top_k_values
 
         # Pre-compute normalised forms for fast matching
@@ -246,7 +254,7 @@ class ArgumentValueRetriever:
 
     def retrieve_for_function(
         self,
-        query:        str,
+        query: str,
         function_schema: dict,
     ) -> dict[str, list[ValueMatch]]:
         """
@@ -279,8 +287,8 @@ class ArgumentValueRetriever:
 
     def retrieve_for_functions(
         self,
-        query:            str,
-        function_names:   list[str],
+        query: str,
+        function_names: list[str],
         function_library: dict,
     ) -> dict[str, list[ValueMatch]]:
         """
@@ -308,7 +316,7 @@ class ArgumentValueRetriever:
                             combined[param_name].append(m)
                     # Re-sort by score
                     combined[param_name].sort(key=lambda x: -x.score)
-                    combined[param_name] = combined[param_name][:self.top_k_values]
+                    combined[param_name] = combined[param_name][: self.top_k_values]
 
         return combined
 
@@ -325,8 +333,8 @@ class ArgumentValueRetriever:
             return self.catalog[param_name]
 
         # Suffix match: find the longest catalog key that is a suffix of param_name
-        best_key  = None
-        best_len  = 0
+        best_key = None
+        best_len = 0
         for key in self.catalog:
             if param_name.endswith(key) and len(key) > best_len:
                 best_key = key
@@ -345,50 +353,56 @@ class ArgumentValueRetriever:
 
     def _score_values(
         self,
-        query:   str,
+        query: str,
         catalog: list[dict],
     ) -> list[ValueMatch]:
         """
         Score each catalog entry against the query and return top-k matches.
         Only returns entries with score > 0.
         """
-        query_norm   = self._normalise(query)
+        query_norm = self._normalise(query)
         query_tokens = set(query_norm.split())
 
         scored: list[ValueMatch] = []
 
         for entry in catalog:
-            code      = str(entry.get("code", ""))
-            label     = str(entry.get("label", ""))
+            code = str(entry.get("code", ""))
+            label = str(entry.get("label", ""))
             alt_label = str(entry.get("alt_label", ""))
-            group     = str(entry.get("group", ""))
+            group = str(entry.get("group", ""))
 
             score = self._match_score(
-                query, query_norm, query_tokens,
-                code, label, alt_label,
+                query,
+                query_norm,
+                query_tokens,
+                code,
+                label,
+                alt_label,
             )
 
             if score > 0.0:
-                scored.append(ValueMatch(
-                    code      = code,
-                    label     = label,
-                    group     = group,
-                    score     = score,
-                    alt_label = alt_label,
-                ))
+                scored.append(
+                    ValueMatch(
+                        code=code,
+                        label=label,
+                        group=group,
+                        score=score,
+                        alt_label=alt_label,
+                    )
+                )
 
         # Sort by score descending, return top-k
         scored.sort(key=lambda x: -x.score)
-        return scored[:self.top_k_values]
+        return scored[: self.top_k_values]
 
     def _match_score(
         self,
-        query:        str,
-        query_norm:   str,
+        query: str,
+        query_norm: str,
         query_tokens: set[str],
-        code:         str,
-        label:        str,
-        alt_label:    str,
+        code: str,
+        label: str,
+        alt_label: str,
     ) -> float:
         """
         Compute relevance score for one catalog entry.
@@ -402,8 +416,8 @@ class ArgumentValueRetriever:
           0.5  per overlapping token between query tokens and label tokens
                (capped at 0.9)
         """
-        q_lower     = query.lower()
-        code_lower  = code.lower()
+        q_lower = query.lower()
+        code_lower = code.lower()
 
         # Rule 1: exact code in query
         if code_lower in q_lower:
@@ -412,7 +426,7 @@ class ArgumentValueRetriever:
             return 0.8 + 0.2 * specificity
 
         # Rule 2: exact label in query (normalised)
-        label_norm     = self._normalise(label)
+        label_norm = self._normalise(label)
         alt_label_norm = self._normalise(alt_label) if alt_label else ""
 
         if label_norm in query_norm:
@@ -421,19 +435,13 @@ class ArgumentValueRetriever:
             return 0.9
 
         # Rule 3: token overlap (normalised)
-        label_tokens     = set(label_norm.split())
+        label_tokens = set(label_norm.split())
         alt_label_tokens = set(alt_label_norm.split()) if alt_label_norm else set()
         all_label_tokens = label_tokens | alt_label_tokens
 
         # Remove very short/common tokens
-        meaningful_label_tokens = {
-            t for t in all_label_tokens
-            if len(t) >= 2
-        }
-        meaningful_query_tokens = {
-            t for t in query_tokens
-            if len(t) >= 2
-        }
+        meaningful_label_tokens = {t for t in all_label_tokens if len(t) >= 2}
+        meaningful_query_tokens = {t for t in query_tokens if len(t) >= 2}
 
         if not meaningful_label_tokens:
             return 0.0
@@ -461,7 +469,8 @@ class ArgumentValueRetriever:
 
         # Extra Vietnamese normalisation
         replacements = {
-            "đ": "d", "ð": "d",
+            "đ": "d",
+            "ð": "d",
         }
         for src, dst in replacements.items():
             ascii_text = ascii_text.replace(src, dst)
@@ -474,6 +483,7 @@ class ArgumentValueRetriever:
 # ──────────────────────────────────────────────────────────────────────────────
 # Combined TelcoRetriever
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class TelcoRetriever:
     """
@@ -490,60 +500,60 @@ class TelcoRetriever:
 
     def __init__(
         self,
-        function_retriever:  FunctionRetriever,
-        value_retriever:     ArgumentValueRetriever,
+        function_retriever: FunctionRetriever,
+        value_retriever: ArgumentValueRetriever,
     ):
-        self.func_retriever  = function_retriever
+        self.func_retriever = function_retriever
         self.value_retriever = value_retriever
 
     @classmethod
     def build(
         cls,
         function_library: dict,
-        argument_values:  dict,
-        method:           str   = "hybrid",
-        encoder_model:    str   = "sentence-transformers/all-MiniLM-L6-v2",
-        top_k_values:     int   = 3,
-        index_dir:        str | None = None,
+        argument_values: dict,
+        method: str = "hybrid",
+        encoder_model: str = "sentence-transformers/all-MiniLM-L6-v2",
+        top_k_values: int = 3,
+        index_dir: str | None = None,
     ) -> "TelcoRetriever":
         """Build a TelcoRetriever from raw library and value catalog dicts."""
         func_ret = FunctionRetriever(
-            function_library = function_library,
-            method           = method,
-            encoder_model    = encoder_model,
-            index_dir        = index_dir,
+            function_library=function_library,
+            method=method,
+            encoder_model=encoder_model,
+            index_dir=index_dir,
         )
         val_ret = ArgumentValueRetriever(
-            argument_values = argument_values,
-            top_k_values    = top_k_values,
+            argument_values=argument_values,
+            top_k_values=top_k_values,
         )
         return cls(func_ret, val_ret)
 
     @classmethod
     def load(
         cls,
-        retriever_path:   str,
+        retriever_path: str,
         function_library: dict,
-        argument_values:  dict,
-        top_k_values:     int = 3,
-        encoder_model:    str = "sentence-transformers/all-MiniLM-L6-v2",
+        argument_values: dict,
+        top_k_values: int = 3,
+        encoder_model: str = "sentence-transformers/all-MiniLM-L6-v2",
     ) -> "TelcoRetriever":
         """Load a saved FunctionRetriever + build a fresh ArgumentValueRetriever."""
         func_ret = FunctionRetriever.load(
             retriever_path, function_library, encoder_model
         )
         val_ret = ArgumentValueRetriever(
-            argument_values = argument_values,
-            top_k_values    = top_k_values,
+            argument_values=argument_values,
+            top_k_values=top_k_values,
         )
         return cls(func_ret, val_ret)
 
     def retrieve(
         self,
-        query:                   str,
-        function_library:        dict,
-        k:                       int = 5,
-        precomputed_func_names:  list[str] | None = None,
+        query: str,
+        function_library: dict,
+        k: int = 5,
+        precomputed_func_names: list[str] | None = None,
     ) -> RetrievalResult:
         """
         Full two-stage retrieval.
@@ -568,12 +578,12 @@ class TelcoRetriever:
 
         # Stage 2: argument value retrieval
         arg_values = self.value_retriever.retrieve_for_functions(
-            query            = query,
-            function_names   = func_names,
-            function_library = function_library,
+            query=query,
+            function_names=func_names,
+            function_library=function_library,
         )
 
         return RetrievalResult(
-            function_names  = func_names,
-            argument_values = arg_values,
+            function_names=func_names,
+            argument_values=arg_values,
         )

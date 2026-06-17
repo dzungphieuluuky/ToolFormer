@@ -13,9 +13,9 @@ from pathlib import Path
 import jsonlines
 from tqdm.auto import tqdm
 
-from src.utils.model_utils   import load_model_from_path, generate_response
-from src.utils.sandbox        import Sandbox
-from src.data.retrieval       import FunctionRetriever
+from src.utils.model_utils import load_model_from_path, generate_response
+from src.utils.sandbox import Sandbox
+from src.data.retrieval import FunctionRetriever
 from src.algorithms.base_trainer import build_prompt, SYSTEM_PROMPT
 from .metrics import compute_all_metrics, aggregate_metrics, estimate_cost
 from src.utils.logging_utils import get_logger
@@ -25,15 +25,16 @@ logger = get_logger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def evaluate_model(
-    model_path:       str,
+    model_path: str,
     test_dataset_path: str,
-    function_library:  dict,
-    retriever:         FunctionRetriever,
-    sandbox:           Sandbox,
-    top_k:             int   = 5,
-    max_new_tokens:    int   = 512,
-    model_name_tag:    str   = "model",
+    function_library: dict,
+    retriever: FunctionRetriever,
+    sandbox: Sandbox,
+    top_k: int = 5,
+    max_new_tokens: int = 512,
+    model_name_tag: str = "model",
 ) -> dict:
     """
     Evaluate a fine-tuned model on the held-out test set.
@@ -54,8 +55,8 @@ def evaluate_model(
     results = []
 
     for sample in tqdm(test_samples, desc=f"Eval [{model_name_tag}]"):
-        query     = sample["query"]
-        gt        = sample.get("ground_truth", {})
+        query = sample["query"]
+        gt = sample.get("ground_truth", {})
 
         # Retrieve top-k functions
         retrieved = retriever.retrieve(query, k=top_k)
@@ -64,7 +65,10 @@ def evaluate_model(
         prompt = tokenizer.apply_chat_template(
             [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": build_prompt(query, retrieved, function_library)},
+                {
+                    "role": "user",
+                    "content": build_prompt(query, retrieved, function_library),
+                },
             ],
             tokenize=False,
             add_generation_prompt=True,
@@ -72,9 +76,9 @@ def evaluate_model(
         )
 
         # Time the inference
-        t0       = time.perf_counter()
+        t0 = time.perf_counter()
         response = generate_response(model, tokenizer, prompt, max_new_tokens)
-        latency  = (time.perf_counter() - t0) * 1000.0  # ms
+        latency = (time.perf_counter() - t0) * 1000.0  # ms
 
         cost = estimate_cost(prompt, response)
         metrics = compute_all_metrics(

@@ -71,19 +71,22 @@ STRICT RULES:
 # Retriever block builder
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def build_function_description(func_name: str, schema: dict) -> str:
     """Render one function schema into a human-readable block."""
     lines = [f"### {func_name}"]
-    lines.append(f"Description: {schema.get('description', 'No description available')}")
+    lines.append(
+        f"Description: {schema.get('description', 'No description available')}"
+    )
 
     params = schema.get("parameters", {})
     if params:
         lines.append("Parameters:")
         for pname, pinfo in params.items():
             if isinstance(pinfo, dict):
-                ptype    = pinfo.get("type", "any")
+                ptype = pinfo.get("type", "any")
                 required = "(required)" if pinfo.get("required") else "(optional)"
-                desc     = pinfo.get("description", "")
+                desc = pinfo.get("description", "")
                 lines.append(f"  - {pname} [{ptype}] {required}: {desc}")
             else:
                 lines.append(f"  - {pname}: {pinfo}")
@@ -96,7 +99,7 @@ def build_function_description(func_name: str, schema: dict) -> str:
 
 
 def build_argument_values_block(
-    argument_values: "dict[str, list]",   # param_name → list[ValueMatch]
+    argument_values: "dict[str, list]",  # param_name → list[ValueMatch]
 ) -> str:
     """
     Render the retrieved argument values as a readable block.
@@ -128,7 +131,7 @@ def build_argument_values_block(
                 lines.append(f"  - {m.code} → {label_str}  [{m.group}]")
             else:
                 # Plain dict fallback
-                code  = m.get("code", "")
+                code = m.get("code", "")
                 label = m.get("label", "")
                 group = m.get("group", "")
                 lines.append(f"  - {code} → {label}  [{group}]")
@@ -137,9 +140,9 @@ def build_argument_values_block(
 
 
 def build_retriever_block(
-    function_names:   list[str],
+    function_names: list[str],
     function_library: dict,
-    argument_values:  "dict[str, list] | None" = None,
+    argument_values: "dict[str, list] | None" = None,
 ) -> str:
     """
     Build the complete <retriever> block content.
@@ -162,7 +165,7 @@ def build_retriever_block(
     for fn in function_names:
         if fn in function_library:
             lines.append(build_function_description(fn, function_library[fn]))
-            lines.append("")   # blank line between functions
+            lines.append("")  # blank line between functions
 
     # ── Argument values ───────────────────────────────────────────────────────
     if argument_values:
@@ -177,11 +180,12 @@ def build_retriever_block(
 # Full message builders
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def build_messages_for_grpo(
-    query:            str,
-    function_names:   list[str],
+    query: str,
+    function_names: list[str],
     function_library: dict,
-    argument_values:  "dict[str, list] | None" = None,
+    argument_values: "dict[str, list] | None" = None,
 ) -> list[dict]:
     """
     Build the [system, user] messages for GRPO rollout generation.
@@ -198,22 +202,21 @@ def build_messages_for_grpo(
     )
 
     user_content = (
-        f"<user>\n{query}\n</user>\n\n"
-        f"<retriever>\n{retriever_content}\n</retriever>"
+        f"<user>\n{query}\n</user>\n\n<retriever>\n{retriever_content}\n</retriever>"
     )
 
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user",   "content": user_content},
+        {"role": "user", "content": user_content},
     ]
 
 
 def build_messages_for_sft(
-    query:            str,
-    function_names:   list[str],
+    query: str,
+    function_names: list[str],
     function_library: dict,
-    ground_truth:     dict,
-    argument_values:  "dict[str, list] | None" = None,
+    ground_truth: dict,
+    argument_values: "dict[str, list] | None" = None,
 ) -> list[dict]:
     """
     Build the complete [system, user, assistant] messages for SFT.
@@ -226,7 +229,7 @@ def build_messages_for_sft(
 
     reasoning = ground_truth.get(
         "reasoning",
-        "Analysing the query to determine the correct function and arguments."
+        "Analysing the query to determine the correct function and arguments.",
     )
     func_name = ground_truth.get("function")
     arguments = ground_truth.get("arguments", {})
@@ -253,11 +256,12 @@ def build_messages_for_sft(
 # Dataset formatters
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def format_sample_for_grpo(
-    sample:           dict,
+    sample: dict,
     function_library: dict,
     tokenizer,
-    argument_values:  "dict[str, list] | None" = None,
+    argument_values: "dict[str, list] | None" = None,
 ) -> dict:
     """
     Convert one raw dataset sample into GRPOTrainer format.
@@ -271,63 +275,63 @@ def format_sample_for_grpo(
       query           → str  (passed as kwarg to reward functions)
       workflow_type   → str  (passed as kwarg to reward functions)
     """
-    query     = sample["query"]
+    query = sample["query"]
     retrieved = sample.get("retrieved_functions", [])
-    gt        = sample.get("ground_truth", {})
+    gt = sample.get("ground_truth", {})
 
     # Use pre-computed argument values if available in sample
     arg_vals = argument_values or sample.get("retrieved_argument_values")
 
     messages = build_messages_for_grpo(
-        query            = query,
-        function_names   = retrieved,
-        function_library = function_library,
-        argument_values  = arg_vals,
+        query=query,
+        function_names=retrieved,
+        function_library=function_library,
+        argument_values=arg_vals,
     )
 
     prompt = tokenizer.apply_chat_template(
         messages,
-        tokenize              = False,
-        add_generation_prompt = True,
+        tokenize=False,
+        add_generation_prompt=True,
     )
 
     return {
-        "prompt":        prompt,
-        "ground_truth":  gt,
-        "query":         query,
+        "prompt": prompt,
+        "ground_truth": gt,
+        "query": query,
         "workflow_type": sample.get("workflow_type", "single_call"),
     }
 
 
 def format_sample_for_sft(
-    sample:           dict,
+    sample: dict,
     function_library: dict,
     tokenizer,
-    argument_values:  "dict[str, list] | None" = None,
+    argument_values: "dict[str, list] | None" = None,
 ) -> dict:
     """
     Convert one raw sample into SFTTrainer format.
     Includes the full conversation (system + user + assistant).
     """
-    query     = sample["query"]
+    query = sample["query"]
     retrieved = sample.get("retrieved_functions", [])
-    gt        = sample.get("ground_truth", {})
+    gt = sample.get("ground_truth", {})
 
     arg_vals = argument_values or sample.get("retrieved_argument_values")
 
     messages = build_messages_for_sft(
-        query            = query,
-        function_names   = retrieved,
-        function_library = function_library,
-        ground_truth     = gt,
-        argument_values  = arg_vals,
+        query=query,
+        function_names=retrieved,
+        function_library=function_library,
+        ground_truth=gt,
+        argument_values=arg_vals,
     )
 
     return {
         "text": tokenizer.apply_chat_template(
             messages,
-            tokenize              = False,
-            add_generation_prompt = False,
+            tokenize=False,
+            add_generation_prompt=False,
         )
     }
 
@@ -336,12 +340,13 @@ def format_sample_for_sft(
 # Dataset loaders
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def load_grpo_dataset(
-    jsonl_path:               str,
-    function_library:         dict,
+    jsonl_path: str,
+    function_library: dict,
     tokenizer,
-    argument_values_catalog:  dict | None = None,
-    telco_retriever           = None,
+    argument_values_catalog: dict | None = None,
+    telco_retriever=None,
 ) -> "datasets.Dataset":
     """
     Load the final enriched .jsonl (train_dataset.jsonl) for GRPOTrainer.
@@ -368,18 +373,20 @@ def load_grpo_dataset(
     val_retriever = None
     if telco_retriever is None and argument_values_catalog is not None:
         from src.data.retrieval import ArgumentValueRetriever
+
         val_retriever = ArgumentValueRetriever(argument_values_catalog)
 
     formatted = []
     for sample in raw_samples:
-        query     = sample["query"]
+        query = sample["query"]
         retrieved = sample.get("retrieved_functions", [])
 
         # Argument value priority: live > pre-computed in sample > on-the-fly
         if telco_retriever is not None:
-            result   = telco_retriever.retrieve(
-                query, function_library,
-                precomputed_func_names = retrieved,
+            result = telco_retriever.retrieve(
+                query,
+                function_library,
+                precomputed_func_names=retrieved,
             )
             arg_vals = result.argument_values
         elif val_retriever is not None:
@@ -388,7 +395,7 @@ def load_grpo_dataset(
             )
         else:
             # Use whatever was stored by prepare_data.py — may be None
-            raw_av   = sample.get("retrieved_argument_values")
+            raw_av = sample.get("retrieved_argument_values")
             arg_vals = _deserialise_arg_values(raw_av) if raw_av else None
 
         formatted.append(
@@ -401,27 +408,29 @@ def load_grpo_dataset(
 
     # ── Sanity-check first sample ─────────────────────────────────────────────
     if formatted:
-        s  = formatted[0]
+        s = formatted[0]
         gt = s["ground_truth"]
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print("SAMPLE PROMPT (first 1200 chars):")
         print("=" * 70)
         print(s["prompt"][:1200])
         print("..." if len(s["prompt"]) > 1200 else "")
         print(f"\nGROUND TRUTH (reward funcs see this, MODEL DOES NOT):")
         print(f"  function:  {gt.get('function')}")
-        print(f"  arguments: {json.dumps(gt.get('arguments', {}), ensure_ascii=False)[:300]}")
+        print(
+            f"  arguments: {json.dumps(gt.get('arguments', {}), ensure_ascii=False)[:300]}"
+        )
         print("=" * 70 + "\n")
 
     return dataset
 
 
 def load_sft_dataset(
-    jsonl_path:               str,
-    function_library:         dict,
+    jsonl_path: str,
+    function_library: dict,
     tokenizer,
-    argument_values_catalog:  dict | None = None,
-    telco_retriever           = None,
+    argument_values_catalog: dict | None = None,
+    telco_retriever=None,
 ) -> "datasets.Dataset":
     """
     Load the final enriched .jsonl for SFTTrainer.
@@ -438,17 +447,19 @@ def load_sft_dataset(
     val_retriever = None
     if telco_retriever is None and argument_values_catalog is not None:
         from src.data.retrieval import ArgumentValueRetriever
+
         val_retriever = ArgumentValueRetriever(argument_values_catalog)
 
     formatted = []
     for sample in raw_samples:
-        query     = sample["query"]
+        query = sample["query"]
         retrieved = sample.get("retrieved_functions", [])
 
         if telco_retriever is not None:
-            result   = telco_retriever.retrieve(
-                query, function_library,
-                precomputed_func_names = retrieved,
+            result = telco_retriever.retrieve(
+                query,
+                function_library,
+                precomputed_func_names=retrieved,
             )
             arg_vals = result.argument_values
         elif val_retriever is not None:
@@ -456,7 +467,7 @@ def load_sft_dataset(
                 query, retrieved, function_library
             )
         else:
-            raw_av   = sample.get("retrieved_argument_values")
+            raw_av = sample.get("retrieved_argument_values")
             arg_vals = _deserialise_arg_values(raw_av) if raw_av else None
 
         formatted.append(
@@ -484,45 +495,58 @@ def _deserialise_arg_values(raw: dict) -> dict:
     # does isinstance(m, dict) and falls through to m.get("code") etc.
     return raw  # already the right format
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Model loading + GRPOConfig builder (unchanged)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def load_model(config: dict | None = None):
     from unsloth import FastLanguageModel, PatchFastRL
     from trl import GRPOTrainer as _GT
+
     PatchFastRL("GRPO", FastLanguageModel)
 
-    cfg       = config or {}
+    cfg = config or {}
     model_cfg = cfg.get("model", {})
-    lora_cfg  = cfg.get("lora",  {})
+    lora_cfg = cfg.get("lora", {})
 
     model_name = model_cfg.get("name", "unsloth/qwen3-4b-unsloth-bnb-4bit")
-    max_seq    = model_cfg.get("max_seq_length", 2048)
-    lora_rank  = lora_cfg.get("r", 16)
+    max_seq = model_cfg.get("max_seq_length", 2048)
+    lora_rank = lora_cfg.get("r", 16)
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name             = model_name,
-        max_seq_length         = max_seq,
-        load_in_4bit           = model_cfg.get("load_in_4bit", True),
-        dtype                  = None,
-        fast_inference         = model_cfg.get("fast_inference", True),
-        max_lora_rank          = lora_rank,
-        gpu_memory_utilization = model_cfg.get("gpu_memory_utilization", 0.7),
+        model_name=model_name,
+        max_seq_length=max_seq,
+        load_in_4bit=model_cfg.get("load_in_4bit", True),
+        dtype=None,
+        fast_inference=model_cfg.get("fast_inference", True),
+        max_lora_rank=lora_rank,
+        gpu_memory_utilization=model_cfg.get("gpu_memory_utilization", 0.7),
     )
 
     model = FastLanguageModel.get_peft_model(
         model,
-        r                          = lora_rank,
-        lora_alpha                 = lora_cfg.get("lora_alpha", lora_rank),
-        lora_dropout               = lora_cfg.get("lora_dropout", 0.0),
-        target_modules             = lora_cfg.get("target_modules", [
-            "q_proj", "k_proj", "v_proj", "o_proj",
-            "gate_proj", "up_proj", "down_proj",
-        ]),
-        bias                       = lora_cfg.get("bias", "none"),
-        use_gradient_checkpointing = lora_cfg.get("use_gradient_checkpointing", "unsloth"),
-        random_state               = 3407,
+        r=lora_rank,
+        lora_alpha=lora_cfg.get("lora_alpha", lora_rank),
+        lora_dropout=lora_cfg.get("lora_dropout", 0.0),
+        target_modules=lora_cfg.get(
+            "target_modules",
+            [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ],
+        ),
+        bias=lora_cfg.get("bias", "none"),
+        use_gradient_checkpointing=lora_cfg.get(
+            "use_gradient_checkpointing", "unsloth"
+        ),
+        random_state=3407,
     )
     return model, tokenizer
 
@@ -532,43 +556,43 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> "GRPOConfi
     from vllm import SamplingParams
 
     train_cfg = config.get("training", {})
-    grpo_cfg  = config.get("grpo",     {})
-    data_cfg  = config.get("data",     {})
+    grpo_cfg = config.get("grpo", {})
+    data_cfg = config.get("data", {})
 
     vllm_params = SamplingParams(
-        temperature                = grpo_cfg.get("temperature", 1.0),
-        top_p                      = 0.95,
-        min_p                      = 0.05,
-        seed                       = train_cfg.get("seed", 3407),
-        stop                       = ["</tool_call>"],    # updated stop token
-        include_stop_str_in_output = True,
+        temperature=grpo_cfg.get("temperature", 1.0),
+        top_p=0.95,
+        min_p=0.05,
+        seed=train_cfg.get("seed", 3407),
+        stop=["</tool_call>"],  # updated stop token
+        include_stop_str_in_output=True,
     )
 
     return GRPOConfig(
-        output_dir                  = output_dir or train_cfg.get("output_dir", "outputs/model"),
-        learning_rate               = train_cfg.get("learning_rate", 5e-6),
-        adam_beta1                  = train_cfg.get("adam_beta1",   0.9),
-        adam_beta2                  = train_cfg.get("adam_beta2",   0.99),
-        weight_decay                = train_cfg.get("weight_decay", 0.01),
-        warmup_ratio                = train_cfg.get("warmup_ratio", 0.1),
-        lr_scheduler_type           = train_cfg.get("lr_scheduler_type", "cosine"),
-        optim                       = train_cfg.get("optim", "adamw_8bit"),
-        per_device_train_batch_size = train_cfg.get("per_device_train_batch_size", 1),
-        gradient_accumulation_steps = train_cfg.get("gradient_accumulation_steps", 4),
-        num_generations             = train_cfg.get("num_generations", 8),
-        max_prompt_length           = data_cfg.get("max_prompt_length",    1024),
-        max_completion_length       = data_cfg.get("max_completion_length", 512),
-        temperature                 = grpo_cfg.get("temperature", 1.0),
-        epsilon                     = grpo_cfg.get("epsilon",      0.2),
-        epsilon_high                = grpo_cfg.get("epsilon_high", 0.28),
-        loss_type                   = grpo_cfg.get("loss_type",    "grpo"),
-        mask_truncated_completions  = grpo_cfg.get("mask_truncated_completions", True),
-        vllm_sampling_params        = vllm_params,
-        max_steps                   = train_cfg.get("max_steps",   500),
-        save_steps                  = train_cfg.get("save_steps",  100),
-        logging_steps               = train_cfg.get("logging_steps", 1),
-        max_grad_norm               = train_cfg.get("max_grad_norm", 0.1),
-        report_to                   = train_cfg.get("report_to",  "none"),
-        seed                        = train_cfg.get("seed",        3407),
-        bf16                        = torch.cuda.is_bf16_supported(),
+        output_dir=output_dir or train_cfg.get("output_dir", "outputs/model"),
+        learning_rate=train_cfg.get("learning_rate", 5e-6),
+        adam_beta1=train_cfg.get("adam_beta1", 0.9),
+        adam_beta2=train_cfg.get("adam_beta2", 0.99),
+        weight_decay=train_cfg.get("weight_decay", 0.01),
+        warmup_ratio=train_cfg.get("warmup_ratio", 0.1),
+        lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
+        optim=train_cfg.get("optim", "adamw_8bit"),
+        per_device_train_batch_size=train_cfg.get("per_device_train_batch_size", 1),
+        gradient_accumulation_steps=train_cfg.get("gradient_accumulation_steps", 4),
+        num_generations=train_cfg.get("num_generations", 8),
+        max_prompt_length=data_cfg.get("max_prompt_length", 1024),
+        max_completion_length=data_cfg.get("max_completion_length", 512),
+        temperature=grpo_cfg.get("temperature", 1.0),
+        epsilon=grpo_cfg.get("epsilon", 0.2),
+        epsilon_high=grpo_cfg.get("epsilon_high", 0.28),
+        loss_type=grpo_cfg.get("loss_type", "grpo"),
+        mask_truncated_completions=grpo_cfg.get("mask_truncated_completions", True),
+        vllm_sampling_params=vllm_params,
+        max_steps=train_cfg.get("max_steps", 500),
+        save_steps=train_cfg.get("save_steps", 100),
+        logging_steps=train_cfg.get("logging_steps", 1),
+        max_grad_norm=train_cfg.get("max_grad_norm", 0.1),
+        report_to=train_cfg.get("report_to", "none"),
+        seed=train_cfg.get("seed", 3407),
+        bf16=torch.cuda.is_bf16_supported(),
     )

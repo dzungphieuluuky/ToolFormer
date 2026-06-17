@@ -25,12 +25,13 @@ logger = get_logger(__name__)
 # (Replace with real stubs or simulation layer)
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def _default_mock(function_name: str, arguments: dict) -> dict:
     """Default mock: validates argument types and returns a dummy response."""
     return {
         "status": "success",
         "function": function_name,
-        "result":   f"Mock result for {function_name}({arguments})",
+        "result": f"Mock result for {function_name}({arguments})",
     }
 
 
@@ -51,9 +52,9 @@ class Sandbox:
         mocks: dict[str, Callable] | None = None,
         timeout_seconds: float = 5.0,
     ):
-        self.library    = function_library
-        self.mocks      = mocks or {}
-        self.timeout    = timeout_seconds
+        self.library = function_library
+        self.mocks = mocks or {}
+        self.timeout = timeout_seconds
         self._call_log: list[dict] = []
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -79,6 +80,7 @@ class Sandbox:
     def execute_all(self, response: str) -> list[bool]:
         """Execute all <call> blocks in a multi-step response."""
         from src.reward.base_reward import extract_all_calls
+
         calls = extract_all_calls(response)
         return [self._run_call(c) for c in calls]
 
@@ -94,6 +96,7 @@ class Sandbox:
         if isinstance(call_input, dict):
             return call_input
         from src.reward.base_reward import extract_call
+
         return extract_call(call_input)
 
     def _run_call(self, call: dict) -> bool:
@@ -139,7 +142,9 @@ class Sandbox:
         # Check required parameters
         for pname, pinfo in params.items():
             if pinfo.get("required", False) and pname not in arguments:
-                logger.debug(f"[Sandbox] Missing required param '{pname}' for {func_name}")
+                logger.debug(
+                    f"[Sandbox] Missing required param '{pname}' for {func_name}"
+                )
                 self._log(func_name, arguments, "error", f"missing_required:{pname}")
                 return False
 
@@ -161,9 +166,11 @@ class Sandbox:
         return True
 
     def _log(self, func_name: str, arguments: dict, status: str, result: Any) -> None:
-        self._call_log.append({
-            "function":  func_name,
-            "arguments": arguments,
-            "status":    status,
-            "result":    result,
-        })
+        self._call_log.append(
+            {
+                "function": func_name,
+                "arguments": arguments,
+                "status": status,
+                "result": result,
+            }
+        )

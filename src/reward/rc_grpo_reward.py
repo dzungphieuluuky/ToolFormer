@@ -32,20 +32,19 @@ Paper equation (advantage after reward-token conditioning):
 """
 
 from __future__ import annotations
-from .base_reward import (
-    schema_valid, func_selection_ok, args_accuracy, format_reward
-)
+from .base_reward import schema_valid, func_selection_ok, args_accuracy, format_reward
 
 # Special tokens — must be added to tokenizer vocabulary in RCTP-FT phase
 HIGH_REWARD_TOKEN = "<|high_reward|>"
-LOW_REWARD_TOKEN  = "<|low_reward|>"
+LOW_REWARD_TOKEN = "<|low_reward|>"
 
 
 # ── Core reward ───────────────────────────────────────────────────────────────
 
+
 def rc_grpo_reward(
-    response:       str,
-    ground_truth:   dict,
+    response: str,
+    ground_truth: dict,
     sandbox=None,
     args_threshold: float = 0.8,
 ) -> float:
@@ -65,6 +64,7 @@ def rc_grpo_reward(
         return 0.0
     if sandbox is not None:
         from src.utils.sandbox import Sandbox
+
         if not sandbox.execute(response):
             return 0.0
     return 1.0
@@ -72,8 +72,9 @@ def rc_grpo_reward(
 
 # ── TRL-compatible wrappers ───────────────────────────────────────────────────
 
+
 def rc_grpo_reward_func(
-    completions:  list[str],
+    completions: list[str],
     ground_truth: list[dict] | None = None,
     **kwargs,
 ) -> list[float]:

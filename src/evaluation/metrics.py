@@ -12,17 +12,21 @@ from typing import Any
 import numpy as np
 
 from src.reward.base_reward import (
-    extract_call, schema_valid, func_selection_ok, args_accuracy
+    extract_call,
+    schema_valid,
+    func_selection_ok,
+    args_accuracy,
 )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def compute_all_metrics(
-    response:      str,
-    ground_truth:  dict,
+    response: str,
+    ground_truth: dict,
     sandbox,
-    latency_ms:    float,
+    latency_ms: float,
     cost_estimate: float,
     function_library: dict,
 ) -> dict[str, float]:
@@ -34,7 +38,7 @@ def compute_all_metrics(
     call = extract_call(response)
     expected_func = ground_truth.get("function", "none")
     expected_args = ground_truth.get("arguments", {})
-    workflow      = ground_truth.get("workflow", "single_call")
+    workflow = ground_truth.get("workflow", "single_call")
 
     # ── Metric 1: Function Selection Accuracy ────────────────────────────────
     func_sel_acc = func_selection_ok(response, expected_func)
@@ -54,11 +58,7 @@ def compute_all_metrics(
 
     # ── Metric 5: Task Success Rate ──────────────────────────────────────────
     # Full success: correct function + args accuracy > 0.8 + execution ok
-    task_success = float(
-        func_sel_acc == 1.0
-        and arg_acc >= 0.8
-        and exec_success == 1.0
-    )
+    task_success = float(func_sel_acc == 1.0 and arg_acc >= 0.8 and exec_success == 1.0)
 
     # ── Metric 6: Hallucinated Call Rate ─────────────────────────────────────
     hallucinated = 0.0
@@ -68,7 +68,7 @@ def compute_all_metrics(
             hallucinated = 1.0
 
     # ── Metric 7: Abstention Accuracy ────────────────────────────────────────
-    abstention_acc = float("nan")     # only meaningful for abstention samples
+    abstention_acc = float("nan")  # only meaningful for abstention samples
     if workflow == "abstention":
         # Correct abstention: model produces null call or refuses
         produced_call = extract_call(response)
@@ -78,21 +78,21 @@ def compute_all_metrics(
             abstention_acc = 0.0
 
     # ── Metric 8: Latency ────────────────────────────────────────────────────
-    latency = latency_ms   # in milliseconds
+    latency = latency_ms  # in milliseconds
 
     # ── Metric 9: Cost per Query ─────────────────────────────────────────────
-    cost = cost_estimate   # in USD (estimated externally)
+    cost = cost_estimate  # in USD (estimated externally)
 
     return {
         "function_selection_accuracy": func_sel_acc,
-        "argument_accuracy":           arg_acc,
-        "schema_validity":             schema_val,
-        "execution_success_rate":      exec_success,
-        "task_success_rate":           task_success,
-        "hallucinated_call_rate":      hallucinated,
-        "abstention_accuracy":         abstention_acc,
-        "latency_ms":                  latency,
-        "cost_per_query_usd":          cost,
+        "argument_accuracy": arg_acc,
+        "schema_validity": schema_val,
+        "execution_success_rate": exec_success,
+        "task_success_rate": task_success,
+        "hallucinated_call_rate": hallucinated,
+        "abstention_accuracy": abstention_acc,
+        "latency_ms": latency,
+        "cost_per_query_usd": cost,
     }
 
 
@@ -105,20 +105,22 @@ def aggregate_metrics(results: list[dict[str, float]]) -> dict[str, float]:
         return {}
 
     keys = results[0].keys()
-    agg  = {}
+    agg = {}
     for k in keys:
         vals = [r[k] for r in results if not np.isnan(r[k])]
         if vals:
-            agg[k]             = float(np.mean(vals))
-            agg[f"{k}__std"]   = float(np.std(vals))
+            agg[k] = float(np.mean(vals))
+            agg[f"{k}__std"] = float(np.std(vals))
             agg[f"{k}__count"] = len(vals)
         else:
             agg[k] = float("nan")
     return agg
 
 
-def estimate_cost(prompt: str, response: str, price_per_1k_tokens: float = 0.0002) -> float:
+def estimate_cost(
+    prompt: str, response: str, price_per_1k_tokens: float = 0.0002
+) -> float:
     """Rough token-cost estimate (assumes ~1.3 chars/token for English)."""
-    total_chars  = len(prompt) + len(response)
-    tokens_est   = total_chars / 1.3
+    total_chars = len(prompt) + len(response)
+    tokens_est = total_chars / 1.3
     return (tokens_est / 1000) * price_per_1k_tokens

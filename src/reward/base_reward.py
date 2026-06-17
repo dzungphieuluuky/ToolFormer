@@ -13,10 +13,10 @@ from typing import Any
 
 # ── Tag patterns (new format) ─────────────────────────────────────────────────
 _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
-_REASONING_RE = re.compile(r"<reasoning>(.*?)</reasoning>",   re.DOTALL)
+_REASONING_RE = re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL)
 
 # Keep backward-compatible alias so existing imports don't break
-_CALL_RE   = _TOOL_CALL_RE
+_CALL_RE = _TOOL_CALL_RE
 _REASON_RE = _REASONING_RE
 
 
@@ -29,7 +29,7 @@ def extract_call(response: str) -> dict | None:
     if not match:
         # Backward compat: try old <call> tag
         old_re = re.compile(r"<call>(.*?)</call>", re.DOTALL)
-        match  = old_re.search(response)
+        match = old_re.search(response)
     if not match:
         return None
     raw = match.group(1).strip()
@@ -75,9 +75,10 @@ def args_accuracy(response: str | dict, expected_args: dict) -> float:
         return 0.0
     if not expected_args:
         return 1.0
-    actual  = call.get("arguments", {})
+    actual = call.get("arguments", {})
     correct = sum(
-        1 for k, v in expected_args.items()
+        1
+        for k, v in expected_args.items()
         if str(actual.get(k, "")).strip() == str(v).strip()
     )
     return correct / len(expected_args)
@@ -87,12 +88,15 @@ def reasoning_quality(response: str) -> float:
     text = extract_reasoning(response)
     if not text:
         return 0.0
-    words        = len(text.split())
+    words = len(text.split())
     length_score = min(1.0, words / 50.0)
-    has_steps    = bool(re.search(
-        r"(step\s*\d|first|then|finally|because|therefore|since)",
-        text, re.IGNORECASE,
-    ))
+    has_steps = bool(
+        re.search(
+            r"(step\s*\d|first|then|finally|because|therefore|since)",
+            text,
+            re.IGNORECASE,
+        )
+    )
     return 0.7 * length_score + 0.3 * float(has_steps)
 
 

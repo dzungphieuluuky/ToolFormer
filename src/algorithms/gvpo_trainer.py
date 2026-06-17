@@ -51,9 +51,7 @@ from typing import Any
 import torch
 from trl import GRPOTrainer
 
-from .base_trainer import (
-    load_model, build_grpo_config, load_grpo_dataset
-)
+from .base_trainer import load_model, build_grpo_config, load_grpo_dataset
 from src.reward.gvpo_reward import (
     gvpo_reward_func,
     build_per_token_advantages,
@@ -67,6 +65,7 @@ logger = get_logger(__name__)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class GVPOTrainer(GRPOTrainer):
     """
@@ -107,7 +106,7 @@ class GVPOTrainer(GRPOTrainer):
         # Store ground truth refs for access inside compute_loss
         # (populated by _cache_ground_truths called from compute_loss)
         self._current_ground_truths: list[dict] = []
-        self._current_completions:   list[str]  = []
+        self._current_completions: list[str] = []
 
         logger.info(
             f"[GVPO] shaping_coeff b={self.shaping_coeff}  "
@@ -118,7 +117,7 @@ class GVPOTrainer(GRPOTrainer):
 
     def _cache_inputs(self, completions: list[str], ground_truths: list[dict]) -> None:
         """Cache completions and ground truths for use in compute_loss."""
-        self._current_completions   = completions
+        self._current_completions = completions
         self._current_ground_truths = ground_truths
 
     # ── Core override: reshape advantage tensor before PPO-clip loss ──────────
@@ -126,8 +125,8 @@ class GVPOTrainer(GRPOTrainer):
     def compute_loss(
         self,
         model,
-        inputs:             dict[str, Any],
-        return_outputs:     bool = False,
+        inputs: dict[str, Any],
+        return_outputs: bool = False,
         num_items_in_batch: int | None = None,
     ):
         """
@@ -152,9 +151,7 @@ class GVPOTrainer(GRPOTrainer):
             inputs["advantages"] = shaped
 
         # ── Standard PPO-clip loss on shaped advantages ───────────────────────
-        return super().compute_loss(
-            model, inputs, return_outputs, num_items_in_batch
-        )
+        return super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
 
     def _shape_advantages(
         self,
@@ -175,9 +172,9 @@ class GVPOTrainer(GRPOTrainer):
         None                          — if shaping cannot be applied
                                         (falls back to flat GRPO advantages)
         """
-        flat_advs     = inputs.get("advantages")       # [B] or [B, T]
-        attention_mask= inputs.get("attention_mask")   # [B, T]
-        completions   = self._current_completions
+        flat_advs = inputs.get("advantages")  # [B] or [B, T]
+        attention_mask = inputs.get("attention_mask")  # [B, T]
+        completions = self._current_completions
         ground_truths = self._current_ground_truths
 
         # Validate all required inputs are present
@@ -198,7 +195,7 @@ class GVPOTrainer(GRPOTrainer):
         if flat_advs.dim() == 1:
             flat_advs_2d = flat_advs.unsqueeze(1).expand(B, T).clone()
         else:
-            flat_advs_2d = flat_advs.clone()   # already [B, T]
+            flat_advs_2d = flat_advs.clone()  # already [B, T]
 
         shaped_advs = flat_advs_2d.clone()
 
@@ -208,14 +205,16 @@ class GVPOTrainer(GRPOTrainer):
                 continue
 
             # Outcome advantage Â_i (scalar from group normalisation)
-            outcome_adv = float(flat_advs[i] if flat_advs.dim() == 1 else flat_advs[i].mean())
+            outcome_adv = float(
+                flat_advs[i] if flat_advs.dim() == 1 else flat_advs[i].mean()
+            )
 
             # Compute φ(t) for each <call> block in this response
             phi_list = compute_process_shaping(
-                response       = completion,
-                ground_truth   = gt,
-                sandbox        = None,  # sandbox excluded from training loop
-                args_threshold = self.args_threshold,
+                response=completion,
+                ground_truth=gt,
+                sandbox=None,  # sandbox excluded from training loop
+                args_threshold=self.args_threshold,
             )
 
             if not phi_list:
@@ -225,10 +224,11 @@ class GVPOTrainer(GRPOTrainer):
             # Find token spans for each <call> block
             try:
                 from src.reward.gvpo_reward import _find_call_token_spans
+
                 call_spans = _find_call_token_spans(
-                    response    = completion,
-                    tokenizer   = self.processing_class,
-                    max_seq_len = T,
+                    response=completion,
+                    tokenizer=self.processing_class,
+                    max_seq_len=T,
                 )
             except Exception as e:
                 logger.debug(f"[GVPO] Token span mapping failed for sample {i}: {e}")
@@ -258,8 +258,8 @@ class GVPOTrainer(GRPOTrainer):
         # Try to extract completions and ground_truths from kwargs
         # (TRL passes these to reward_funcs as positional/keyword args)
         try:
-            completions   = kwargs.get("completions",   args[0] if args else [])
-            ground_truths = kwargs.get("ground_truth",  [])
+            completions = kwargs.get("completions", args[0] if args else [])
+            ground_truths = kwargs.get("ground_truth", [])
             if completions and ground_truths:
                 self._cache_inputs(completions, ground_truths)
         except Exception:
@@ -272,6 +272,7 @@ class GVPOTrainer(GRPOTrainer):
 # Main training function
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def train_gvpo(config: dict) -> None:
     """
     Full GVPO training run.
@@ -281,8 +282,8 @@ def train_gvpo(config: dict) -> None:
       - gvpo_reward_func returns outcome rewards (same interface as GRPO)
       - Process shaping happens silently inside compute_loss
     """
-    gvpo_cfg  = config.get("gvpo",     {})
-    data_cfg  = config.get("data",     {})
+    gvpo_cfg = config.get("gvpo", {})
+    data_cfg = config.get("data", {})
     train_cfg = config.get("training", {})
 
     # ── 1. Load model ─────────────────────────────────────────────────────────
@@ -298,25 +299,27 @@ def train_gvpo(config: dict) -> None:
     # ── 4. Build GRPOConfig ───────────────────────────────────────────────────
     grpo_args = build_grpo_config(
         config,
-        output_dir = train_cfg.get("output_dir", "outputs/gvpo_model"),
+        output_dir=train_cfg.get("output_dir", "outputs/gvpo_model"),
     )
 
     # ── 5. Instantiate GVPOTrainer ────────────────────────────────────────────
     trainer = GVPOTrainer(
-        model            = model,
-        processing_class = tokenizer,
-        reward_funcs     = [
-            gvpo_reward_func,   # outcome reward R_out(τ) ∈ {0,1}
-            format_reward,      # XML format reward
+        model=model,
+        processing_class=tokenizer,
+        reward_funcs=[
+            gvpo_reward_func,  # outcome reward R_out(τ) ∈ {0,1}
+            format_reward,  # XML format reward
         ],
-        args             = grpo_args,
-        train_dataset    = dataset,
-        gvpo_config      = gvpo_cfg,
+        args=grpo_args,
+        train_dataset=dataset,
+        gvpo_config=gvpo_cfg,
     )
 
     logger.info("[GVPO] Starting training...")
-    logger.info(f"[GVPO] shaping_coeff b={trainer.shaping_coeff}  "
-                f"(b=0 degrades to vanilla GRPO)")
+    logger.info(
+        f"[GVPO] shaping_coeff b={trainer.shaping_coeff}  "
+        f"(b=0 degrades to vanilla GRPO)"
+    )
     trainer.train()
 
     # ── 6. Save ───────────────────────────────────────────────────────────────
