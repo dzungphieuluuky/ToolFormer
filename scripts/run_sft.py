@@ -46,8 +46,9 @@ logger = get_logger("run_sft")
 # RCTP-FT formatter
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def format_rctp_sample(
-    sample:           dict,
+    sample: dict,
     function_library: dict,
     tokenizer,
 ) -> dict:
@@ -74,9 +75,9 @@ def format_rctp_sample(
     High-quality trajectories (non-abstention, has function + arguments)
     receive <|high_reward|>; everything else receives <|low_reward|>.
     """
-    query     = sample["query"]
+    query = sample["query"]
     retrieved = sample.get("retrieved_functions", [])
-    gt        = sample.get("ground_truth", {})
+    gt = sample.get("ground_truth", {})
 
     is_high = (
         gt.get("workflow") != "abstention"
@@ -91,14 +92,19 @@ def format_rctp_sample(
     retriever_content = build_retriever_block(retrieved, function_library, arg_vals)
 
     # Build ground-truth assistant response
-    reasoning  = gt.get("reasoning", "Selecting the correct function based on the query.")
-    func_name  = gt.get("function")
-    arguments  = gt.get("arguments", {})
-    call_json  = (
+    reasoning = gt.get(
+        "reasoning", "Selecting the correct function based on the query."
+    )
+    func_name = gt.get("function")
+    arguments = gt.get("arguments", {})
+    call_json = (
         "null"
         if func_name is None
-        else json.dumps({"function": func_name, "arguments": arguments},
-                        indent=2, ensure_ascii=False)
+        else json.dumps(
+            {"function": func_name, "arguments": arguments},
+            indent=2,
+            ensure_ascii=False,
+        )
     )
     assistant_content = (
         f"<reasoning>\n{reasoning}\n</reasoning>\n"
@@ -109,8 +115,8 @@ def format_rctp_sample(
     rctp_system = f"{reward_token}\n{SYSTEM_PROMPT}"
 
     messages = [
-        {"role": "system",    "content": rctp_system},
-        {"role": "user",      "content": query},
+        {"role": "system", "content": rctp_system},
+        {"role": "user", "content": query},
         {"role": "retriever", "content": retriever_content},
         {"role": "assistant", "content": assistant_content},
     ]
@@ -118,8 +124,8 @@ def format_rctp_sample(
     return {
         "text": tokenizer.apply_chat_template(
             messages,
-            tokenize              = False,
-            add_generation_prompt = False,
+            tokenize=False,
+            add_generation_prompt=False,
         )
     }
 
@@ -128,18 +134,20 @@ def format_rctp_sample(
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/base_config.yaml")
     parser.add_argument(
-        "--rctp", action="store_true",
+        "--rctp",
+        action="store_true",
         help="Run RCTP-FT (RC-GRPO Phase 1) instead of standard SFT",
     )
     args = parser.parse_args()
 
-    cfg       = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
-    data_cfg  = cfg["data"]
-    sft_cfg   = cfg.get("sft", {})
+    cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+    data_cfg = cfg["data"]
+    sft_cfg = cfg.get("sft", {})
 
     # ── 1. Load model (patch_tokenizer_for_custom_roles is called inside) ─────
     model, tokenizer = load_model(cfg)
@@ -163,19 +171,16 @@ def main():
                 raw_samples.append(obj)
 
         formatted = [
-            format_rctp_sample(s, function_library, tokenizer)
-            for s in raw_samples
+            format_rctp_sample(s, function_library, tokenizer) for s in raw_samples
         ]
-        dataset    = Dataset.from_list(formatted)
+        dataset = Dataset.from_list(formatted)
         output_dir = sft_cfg.get("rctp_output_dir", "outputs/rctp_sft_model")
-        logger.info(
-            f"[RCTP-FT] {len(formatted)} samples formatted with reward tokens."
-        )
+        logger.info(f"[RCTP-FT] {len(formatted)} samples formatted with reward tokens.")
     else:
-        dataset    = load_sft_dataset(
-            jsonl_path       = data_cfg["train_path"],
-            function_library = function_library,
-            tokenizer        = tokenizer,
+        dataset = load_sft_dataset(
+            jsonl_path=data_cfg["train_path"],
+            function_library=function_library,
+            tokenizer=tokenizer,
         )
         output_dir = sft_cfg.get("output_dir", "outputs/sft_model")
 
@@ -192,27 +197,27 @@ def main():
 
     # ── 6. Train ───────────────────────────────────────────────────────────────
     sft_args = SFTConfig(
-        output_dir                  = output_dir,
-        num_train_epochs            = sft_cfg.get("num_train_epochs", 1),
-        per_device_train_batch_size = sft_cfg.get("per_device_train_batch_size", 2),
-        gradient_accumulation_steps = sft_cfg.get("gradient_accumulation_steps", 4),
-        learning_rate               = sft_cfg.get("learning_rate", 2e-4),
-        warmup_ratio                = 0.1,
-        logging_steps               = 10,
-        save_steps                  = 200,
-        max_seq_length              = (
-            data_cfg.get("max_prompt_length",    1024)
+        output_dir=output_dir,
+        num_train_epochs=sft_cfg.get("num_train_epochs", 1),
+        per_device_train_batch_size=sft_cfg.get("per_device_train_batch_size", 2),
+        gradient_accumulation_steps=sft_cfg.get("gradient_accumulation_steps", 4),
+        learning_rate=sft_cfg.get("learning_rate", 2e-4),
+        warmup_ratio=0.1,
+        logging_steps=10,
+        save_steps=200,
+        max_seq_length=(
+            data_cfg.get("max_prompt_length", 1024)
             + data_cfg.get("max_completion_length", 512)
         ),
-        report_to          = "none",
-        dataset_text_field = "text",
+        report_to="none",
+        dataset_text_field="text",
     )
 
     trainer = SFTTrainer(
-        model         = model,
-        tokenizer     = tokenizer,
-        train_dataset = dataset,
-        args          = sft_args,
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=dataset,
+        args=sft_args,
     )
 
     logger.info(f"[SFT] Starting {mode_label}...")

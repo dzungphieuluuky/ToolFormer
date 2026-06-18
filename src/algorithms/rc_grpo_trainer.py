@@ -192,7 +192,9 @@ def train_rc_grpo(config: dict) -> None:
     rctp_dataset_path = data_cfg.get("rctp_dataset_path")
     if rctp_dataset_path and Path(rctp_dataset_path).exists():
         high_fraction = compute_high_fraction_from_rctp_dataset(rctp_dataset_path)
-        logger.info(f"[RC-GRPO] Computed high_fraction={high_fraction:.3f} from RCTP dataset.")
+        logger.info(
+            f"[RC-GRPO] Computed high_fraction={high_fraction:.3f} from RCTP dataset."
+        )
     else:
         high_fraction = rc_cfg.get("high_fraction", 0.5)
         logger.warning(

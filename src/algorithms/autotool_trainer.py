@@ -35,6 +35,7 @@ logger = get_logger(__name__)
 # Reward function with length penalty
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def autotool_reward_func(
     completions: list[str],
     ground_truth: list[dict] | None = None,
@@ -55,9 +56,9 @@ def autotool_reward_func(
             gt = {}
         # Outcome reward (binary)
         ok = (
-            schema_valid(comp) and
-            func_selection_ok(comp, gt.get("function", "")) == 1.0 and
-            args_accuracy(comp, gt.get("arguments", {})) >= 0.8
+            schema_valid(comp)
+            and func_selection_ok(comp, gt.get("function", "")) == 1.0
+            and args_accuracy(comp, gt.get("arguments", {})) >= 0.8
         )
         outcome = 1.0 if ok else 0.0
 
@@ -66,7 +67,9 @@ def autotool_reward_func(
         length = len(comp.split())
         if workflow_type == "single_call":
             # Simpler tasks should have shorter responses
-            penalty = max(0.0, (length - 100) / 200.0)  # penalty for length > 100 tokens
+            penalty = max(
+                0.0, (length - 100) / 200.0
+            )  # penalty for length > 100 tokens
         elif workflow_type == "parallel":
             penalty = max(0.0, (length - 150) / 300.0)
         else:  # sequential or abstention
@@ -82,6 +85,7 @@ def autotool_reward_func(
 # ──────────────────────────────────────────────────────────────────────────────
 # AutoTool Trainer
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class AutoToolTrainer(GRPOTrainer):
     """
@@ -104,8 +108,10 @@ class AutoToolTrainer(GRPOTrainer):
         self.entropy_coeff_tool = cfg.get("entropy_coeff_tool", 0.005)
         self.entropy_coeff_other = cfg.get("entropy_coeff_other", 0.001)
 
-        logger.info(f"[AutoTool] entropy_coeff_reasoning={self.entropy_coeff_reasoning}  "
-                    f"tool={self.entropy_coeff_tool}  other={self.entropy_coeff_other}")
+        logger.info(
+            f"[AutoTool] entropy_coeff_reasoning={self.entropy_coeff_reasoning}  "
+            f"tool={self.entropy_coeff_tool}  other={self.entropy_coeff_other}"
+        )
 
     # ── Core override: add entropy bonus to loss ──────────────────────────────
 
@@ -164,7 +170,9 @@ class AutoToolTrainer(GRPOTrainer):
                 probs = F.softmax(logits, dim=-1)
                 log_probs = F.log_softmax(logits, dim=-1)
                 entropy = -torch.sum(probs * log_probs, dim=-1)  # [B, T]
-                entropy_loss = -coeff * (entropy * attention_mask).sum() / attention_mask.sum()
+                entropy_loss = (
+                    -coeff * (entropy * attention_mask).sum() / attention_mask.sum()
+                )
                 loss = loss + entropy_loss
             return loss if not return_outputs else (loss, outputs)
 
@@ -212,9 +220,9 @@ class AutoToolTrainer(GRPOTrainer):
         total_tokens = mask.sum().float()
         # Normalise by number of tokens
         entropy_loss = -(
-            self.entropy_coeff_reasoning * entropy_reasoning / (mask.sum() + 1e-8) +
-            self.entropy_coeff_tool * entropy_tool / (mask.sum() + 1e-8) +
-            self.entropy_coeff_other * entropy_other / (mask.sum() + 1e-8)
+            self.entropy_coeff_reasoning * entropy_reasoning / (mask.sum() + 1e-8)
+            + self.entropy_coeff_tool * entropy_tool / (mask.sum() + 1e-8)
+            + self.entropy_coeff_other * entropy_other / (mask.sum() + 1e-8)
         )
 
         loss = loss + entropy_loss
@@ -227,6 +235,7 @@ class AutoToolTrainer(GRPOTrainer):
 # ──────────────────────────────────────────────────────────────────────────────
 # Main training function
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def train_autotool(config: dict) -> None:
     autotool_cfg = config.get("autotool", {})
@@ -249,8 +258,8 @@ def train_autotool(config: dict) -> None:
         model=model,
         processing_class=tokenizer,
         reward_funcs=[
-            autotool_reward_func,      # outcome + length penalty
-            format_reward,             # XML format reward
+            autotool_reward_func,  # outcome + length penalty
+            format_reward,  # XML format reward
         ],
         args=grpo_args,
         train_dataset=dataset,

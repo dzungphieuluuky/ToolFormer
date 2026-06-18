@@ -9,7 +9,9 @@ import argparse
 from pathlib import Path
 
 
-def consolidate_py_files(input_dir: str, output_file: str, include_relative: bool = True) -> None:
+def consolidate_py_files(
+    input_dir: str, output_file: str, include_relative: bool = True
+) -> None:
     """
     Walk through input_dir, collect all .py files, and write them into a single
     Markdown file.
@@ -25,7 +27,7 @@ def consolidate_py_files(input_dir: str, output_file: str, include_relative: boo
     # Recursively collect all .py files
     for root, dirs, files in os.walk(input_path):
         for file in files:
-            if file.endswith('.py'):
+            if file.endswith(".py"):
                 full_path = Path(root) / file
                 py_files.append(full_path)
 
@@ -37,7 +39,7 @@ def consolidate_py_files(input_dir: str, output_file: str, include_relative: boo
     py_files.sort()
 
     # Write to output file
-    with open(output_file, 'w', encoding='utf-8') as out:
+    with open(output_file, "w", encoding="utf-8") as out:
         out.write(f"# Python Files Consolidated\n\n")
         out.write(f"**Source directory:** `{input_path}`\n\n")
         out.write(f"**Total files:** {len(py_files)}\n\n")
@@ -54,11 +56,11 @@ def consolidate_py_files(input_dir: str, output_file: str, include_relative: boo
 
             try:
                 # Read file content
-                content = file_path.read_text(encoding='utf-8')
+                content = file_path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 # Fallback to latin-1 if UTF-8 fails (rare for .py)
                 try:
-                    content = file_path.read_text(encoding='latin-1')
+                    content = file_path.read_text(encoding="latin-1")
                 except Exception as e:
                     content = f"**Error reading file:** {e}\n"
             except Exception as e:
@@ -67,8 +69,8 @@ def consolidate_py_files(input_dir: str, output_file: str, include_relative: boo
             out.write("```python\n")
             out.write(content)
             # Ensure trailing newline
-            if not content.endswith('\n'):
-                out.write('\n')
+            if not content.endswith("\n"):
+                out.write("\n")
             out.write("```\n\n")
 
     print(f"Successfully consolidated {len(py_files)} files into '{output_file}'")
@@ -82,24 +84,25 @@ def main():
         "input_dir",
         nargs="?",
         default=".",
-        help="Root directory to search for .py files (default: current directory)."
+        help="Root directory to search for .py files (default: current directory).",
     )
     parser.add_argument(
-        "-o", "--output",
+        "-o",
+        "--output",
         default="consolidated_python_files.md",
-        help="Output Markdown file path (default: consolidated_python_files.md)."
+        help="Output Markdown file path (default: consolidated_python_files.md).",
     )
     parser.add_argument(
         "--absolute",
         action="store_true",
-        help="Use absolute paths in headings instead of relative."
+        help="Use absolute paths in headings instead of relative.",
     )
     args = parser.parse_args()
 
     consolidate_py_files(
         input_dir=args.input_dir,
         output_file=args.output,
-        include_relative=not args.absolute
+        include_relative=not args.absolute,
     )
 
 

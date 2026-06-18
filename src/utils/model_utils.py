@@ -14,7 +14,7 @@ def save_model_and_tokenizer(model, tokenizer, output_dir: str) -> None:
 
 def load_model_from_path(
     model_path: str,
-    base_model_name: str = "unsloth/Qwen3-4B-unsloth-bnb-4bit",
+    base_model_name: str = "unsloth/Qwen3-4B-Base",
     max_seq_length: int = 2048,
     load_in_4bit: bool = True,
 ):

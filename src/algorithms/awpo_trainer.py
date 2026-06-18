@@ -86,7 +86,9 @@ class AWPOTrainer(GRPOTrainer):
     # ── Populate reasoning cache during rollout generation ────────────────────
 
     def _generate_and_score_completions(self, prompts, **kwargs):
-        completions, rewards = super()._generate_and_score_completions(prompts, **kwargs)
+        completions, rewards = super()._generate_and_score_completions(
+            prompts, **kwargs
+        )
         for comp in completions:
             if comp not in self._reasoning_cache:
                 self._reasoning_cache[comp] = reasoning_quality(comp)
@@ -153,7 +155,9 @@ class AWPOTrainer(GRPOTrainer):
             w = 4.0 * mu_out * (1.0 - mu_out)
 
             # Mixed reward
-            mixed = [(1 - rho) * r_out + rho * r_rea for r_out, r_rea in zip(out_r, reason_r)]
+            mixed = [
+                (1 - rho) * r_out + rho * r_rea for r_out, r_rea in zip(out_r, reason_r)
+            ]
 
             # Normalise mixed rewards within group
             mu_mix = sum(mixed) / n
@@ -191,7 +195,9 @@ class AWPOTrainer(GRPOTrainer):
             # Shrink clip radius
             self.args.epsilon = original_eps / (1.0 + self.clip_shrink_coeff * rho)
 
-        loss_output = super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
+        loss_output = super().compute_loss(
+            model, inputs, return_outputs, num_items_in_batch
+        )
 
         # Restore
         self.args.epsilon = original_eps
@@ -223,7 +229,7 @@ def train_awpo(config: dict) -> None:
         processing_class=tokenizer,
         reward_funcs=[
             awpo_reward_func,  # outcome reward (func sel + args + exec)
-            format_reward,      # XML format reward
+            format_reward,  # XML format reward
         ],
         args=grpo_args,
         train_dataset=dataset,

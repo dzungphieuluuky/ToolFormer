@@ -76,28 +76,34 @@ We first pre fine-tune the model to make GRPO skip trying to match formatting - 
 
 from unsloth import FastLanguageModel
 import torch
-max_seq_length = 2048 # Can increase for longer reasoning traces
-lora_rank = 32 # Larger rank = smarter, but slower
+
+max_seq_length = 2048  # Can increase for longer reasoning traces
+lora_rank = 32  # Larger rank = smarter, but slower
 
 model, tokenizer = FastLanguageModel.from_pretrained(
-    model_name = "unsloth/Qwen3-4B-Base",
-    max_seq_length = max_seq_length,
-    load_in_4bit = False, # False for LoRA 16bit
-    fast_inference = True, # Enable vllm fast inference
-    max_lora_rank = lora_rank,
-    gpu_memory_utilization = 0.9, # Reduce if out of memory
+    model_name="unsloth/Qwen3-4B-Base",
+    max_seq_length=max_seq_length,
+    load_in_4bit=False,  # False for LoRA 16bit
+    fast_inference=True,  # Enable vllm fast inference
+    max_lora_rank=lora_rank,
+    gpu_memory_utilization=0.9,  # Reduce if out of memory
 )
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r = lora_rank, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-    target_modules = [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
+    r=lora_rank,  # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+    target_modules=[
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
     ],
-    lora_alpha = lora_rank*2, # *2 speeds up training
-    use_gradient_checkpointing = "unsloth", # Reduces memory usage
-    random_state = 3407,
+    lora_alpha=lora_rank * 2,  # *2 speeds up training
+    use_gradient_checkpointing="unsloth",  # Reduces memory usage
+    random_state=3407,
 )
 
 """### GRPO chat template
@@ -106,13 +112,12 @@ Since we're using a base model, we should set a chat template. You can make your
 2. A `system_prompt` is recommended to at least guide the model's responses.
 """
 
-reasoning_start = "<start_working_out>" # Acts as think-open tag
-reasoning_end   = "<end_working_out>"   # Acts as think-close tag
-solution_start  = "<SOLUTION>"
-solution_end    = "</SOLUTION>"
+reasoning_start = "<start_working_out>"  # Acts as think-open tag
+reasoning_end = "<end_working_out>"  # Acts as think-close tag
+solution_start = "<SOLUTION>"
+solution_end = "</SOLUTION>"
 
-system_prompt = \
-f"""You are given a problem.
+system_prompt = f"""You are given a problem.
 Think about the problem and provide your working out.
 Place it between {reasoning_start} and {reasoning_end}.
 Then, provide your solution between {solution_start}{solution_end}"""
@@ -120,37 +125,45 @@ system_prompt
 
 """We create a simple chat template below. Notice `add_generation_prompt` includes prepending `<start_working_out>` to guide the model to start its reasoning process."""
 
-chat_template = \
-    "{% if messages[0]['role'] == 'system' %}"\
-        "{{ messages[0]['content'] + eos_token }}"\
-        "{% set loop_messages = messages[1:] %}"\
-    "{% else %}"\
-        "{{ '{system_prompt}' + eos_token }}"\
-        "{% set loop_messages = messages %}"\
-    "{% endif %}"\
-    "{% for message in loop_messages %}"\
-        "{% if message['role'] == 'user' %}"\
-            "{{ message['content'] }}"\
-        "{% elif message['role'] == 'assistant' %}"\
-            "{{ message['content'] + eos_token }}"\
-        "{% endif %}"\
-    "{% endfor %}"\
-    "{% if add_generation_prompt %}{{ '{reasoning_start}' }}"\
+chat_template = (
+    "{% if messages[0]['role'] == 'system' %}"
+    "{{ messages[0]['content'] + eos_token }}"
+    "{% set loop_messages = messages[1:] %}"
+    "{% else %}"
+    "{{ '{system_prompt}' + eos_token }}"
+    "{% set loop_messages = messages %}"
     "{% endif %}"
+    "{% for message in loop_messages %}"
+    "{% if message['role'] == 'user' %}"
+    "{{ message['content'] }}"
+    "{% elif message['role'] == 'assistant' %}"
+    "{{ message['content'] + eos_token }}"
+    "{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '{reasoning_start}' }}"
+    "{% endif %}"
+)
 
 # Replace with our specific template:
-chat_template = chat_template\
-    .replace("'{system_prompt}'",   f"'{system_prompt}'")\
-    .replace("'{reasoning_start}'", f"'{reasoning_start}'")
+chat_template = chat_template.replace(
+    "'{system_prompt}'", f"'{system_prompt}'"
+).replace("'{reasoning_start}'", f"'{reasoning_start}'")
 tokenizer.chat_template = chat_template
 
 """Let's see how our chat template behaves on an example:"""
 
-tokenizer.apply_chat_template([
-    {"role" : "user", "content" : "What is 1+1?"},
-    {"role" : "assistant", "content" : f"{reasoning_start}I think it's 2.{reasoning_end}{solution_start}2{solution_end}"},
-    {"role" : "user", "content" : "What is 2+2?"},
-], tokenize = False, add_generation_prompt = True)
+tokenizer.apply_chat_template(
+    [
+        {"role": "user", "content": "What is 1+1?"},
+        {
+            "role": "assistant",
+            "content": f"{reasoning_start}I think it's 2.{reasoning_end}{solution_start}2{solution_end}",
+        },
+        {"role": "user", "content": "What is 2+2?"},
+    ],
+    tokenize=False,
+    add_generation_prompt=True,
+)
 
 """### Pre fine-tuning for formatting
 We now use a subset of NVIDIA's [Open Math Reasoning dataset](https://huggingface.co/datasets/nvidia/OpenMathReasoning) which was filtered to only include high quality DeepSeek R1 traces.
@@ -162,19 +175,20 @@ from datasets import load_dataset
 import pandas as pd
 import numpy as np
 
-dataset = load_dataset("unsloth/OpenMathReasoning-mini", split = "cot")
-dataset = dataset.to_pandas()[
-    ["expected_answer", "problem", "generated_solution"]
-]
+dataset = load_dataset("unsloth/OpenMathReasoning-mini", split="cot")
+dataset = dataset.to_pandas()[["expected_answer", "problem", "generated_solution"]]
 
 # Try converting to number - if not, replace with NaN
-is_number = pd.to_numeric(pd.Series(dataset["expected_answer"]), errors = "coerce").notnull()
+is_number = pd.to_numeric(
+    pd.Series(dataset["expected_answer"]), errors="coerce"
+).notnull()
 # Select only numbers
 dataset = dataset.iloc[np.where(is_number)[0]]
 
 dataset
 
 """We have to format the dataset to follow our GRPO style formatting:"""
+
 
 def format_dataset(x):
     expected_answer = x["expected_answer"]
@@ -187,59 +201,70 @@ def format_dataset(x):
     # Strip newlines on left and right
     thoughts = thoughts.strip()
     # Add our custom formatting
-    final_prompt = \
-        reasoning_start + thoughts + reasoning_end + \
-        solution_start + expected_answer + solution_end
+    final_prompt = (
+        reasoning_start
+        + thoughts
+        + reasoning_end
+        + solution_start
+        + expected_answer
+        + solution_end
+    )
     return [
-        {"role" : "system",    "content" : system_prompt},
-        {"role" : "user",      "content" : problem},
-        {"role" : "assistant", "content" : final_prompt},
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": problem},
+        {"role": "assistant", "content": final_prompt},
     ]
 
-dataset["Messages"] = dataset.apply(format_dataset, axis = 1)
+
+dataset["Messages"] = dataset.apply(format_dataset, axis=1)
 
 """Check to see if it worked:"""
 
-tokenizer.apply_chat_template(dataset["Messages"][0], tokenize = False)
+tokenizer.apply_chat_template(dataset["Messages"][0], tokenize=False)
 
 """Let's truncate the pre fine-tuning dataset to `max_seq_length/2` since we don't want too long reasoning traces.
 
 Note this might take 2 minutes!
 """
 
-dataset["N"] = dataset["Messages"].apply(lambda x: len(tokenizer.apply_chat_template(x)))
+dataset["N"] = dataset["Messages"].apply(
+    lambda x: len(tokenizer.apply_chat_template(x))
+)
 
-dataset = dataset.loc[dataset["N"] <= max_seq_length/2].copy()
+dataset = dataset.loc[dataset["N"] <= max_seq_length / 2].copy()
 dataset.shape
 
 """We then tokenize the messages and convert it to a Hugging Face compatible dataset format:"""
 
 from datasets import Dataset
 
-dataset["text"] = tokenizer.apply_chat_template(dataset["Messages"].values.tolist(), tokenize = False)
+dataset["text"] = tokenizer.apply_chat_template(
+    dataset["Messages"].values.tolist(), tokenize=False
+)
 dataset = Dataset.from_pandas(dataset)
 dataset
 
 """Let's now pre fine-tune the model so it follows our custom GRPO formatting!"""
 
 from trl import SFTTrainer, SFTConfig
+
 trainer = SFTTrainer(
-    model = model,
-    tokenizer = tokenizer,
-    train_dataset = dataset,
-    args = SFTConfig(
-        dataset_text_field = "text",
-        per_device_train_batch_size = 1,
-        gradient_accumulation_steps = 1, # Use GA to mimic batch size!
-        warmup_steps = 5,
-        num_train_epochs = 2, # Set this for 1 full training run.
-        learning_rate = 2e-4, # Reduce to 2e-5 for long training runs
-        logging_steps = 5,
-        optim = "adamw_8bit",
-        weight_decay = 0.001,
-        lr_scheduler_type = "linear",
-        seed = 3407,
-        report_to = "none", # Use TrackIO/WandB etc
+    model=model,
+    tokenizer=tokenizer,
+    train_dataset=dataset,
+    args=SFTConfig(
+        dataset_text_field="text",
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=1,  # Use GA to mimic batch size!
+        warmup_steps=5,
+        num_train_epochs=2,  # Set this for 1 full training run.
+        learning_rate=2e-4,  # Reduce to 2e-5 for long training runs
+        logging_steps=5,
+        optim="adamw_8bit",
+        weight_decay=0.001,
+        lr_scheduler_type="linear",
+        seed=3407,
+        report_to="none",  # Use TrackIO/WandB etc
     ),
 )
 
@@ -249,16 +274,17 @@ trainer.train()
 
 text = tokenizer.apply_chat_template(
     dataset[0]["Messages"][:2],
-    tokenize = False,
-    add_generation_prompt = True, # Must add for generation
+    tokenize=False,
+    add_generation_prompt=True,  # Must add for generation
 )
 
 from transformers import TextStreamer
+
 _ = model.generate(
-    **tokenizer(text, return_tensors = "pt").to("cuda"),
-    temperature = 0,
-    max_new_tokens = 1024,
-    streamer = TextStreamer(tokenizer, skip_prompt = False),
+    **tokenizer(text, return_tensors="pt").to("cuda"),
+    temperature=0,
+    max_new_tokens=1024,
+    streamer=TextStreamer(tokenizer, skip_prompt=False),
 )
 
 """Yes it did follow the formatting! Great! Let's remove some items before the GRPO step"""
@@ -266,6 +292,7 @@ _ = model.generate(
 del dataset
 torch.cuda.empty_cache()
 import gc
+
 gc.collect()
 
 """### Data Prep
@@ -275,7 +302,8 @@ We're using Hugging Face's [Open R1 Math dataset](https://huggingface.co/dataset
 """
 
 from datasets import load_dataset
-dataset = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split = "train")
+
+dataset = load_dataset("open-r1/DAPO-Math-17k-Processed", "en", split="train")
 dataset
 
 """Let's look at the first row:"""
@@ -286,21 +314,26 @@ dataset[0]["solution"]
 
 """In GSM8K, we notice all answers like about have a ####, so we extract it. But for the Open R1 dataset, we can skip the below."""
 
+
 def extract_hash_answer(text):
     # if "####" not in text: return None
     # return text.split("####")[1].strip()
     return text
+
+
 extract_hash_answer(dataset[0]["solution"])
 
 """Let's map the dataset! and see the first row:"""
 
-dataset = dataset.map(lambda x: {
-    "prompt" : [
-        {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": x["prompt"]},
-    ],
-    "answer": extract_hash_answer(x["solution"]),
-})
+dataset = dataset.map(
+    lambda x: {
+        "prompt": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": x["prompt"]},
+        ],
+        "answer": extract_hash_answer(x["solution"]),
+    }
+)
 dataset[0]
 
 """We create a regex format to match the reasoning sections and answers:"""
@@ -308,30 +341,30 @@ dataset[0]
 import re
 
 # Add optional EOS token matching
-solution_end_regex = r"</SOLUTION>[\s]{0,}" + \
-    "(?:" + re.escape(tokenizer.eos_token) + ")?"
+solution_end_regex = (
+    r"</SOLUTION>[\s]{0,}" + "(?:" + re.escape(tokenizer.eos_token) + ")?"
+)
 
 match_format = re.compile(
-    rf"{reasoning_end}.*?"\
-    rf"{solution_start}(.+?){solution_end_regex}"\
+    rf"{reasoning_end}.*?"
+    rf"{solution_start}(.+?){solution_end_regex}"
     rf"[\s]{{0,}}$",
-    flags = re.MULTILINE | re.DOTALL
+    flags=re.MULTILINE | re.DOTALL,
 )
 match_format
 
 """We verify it works:"""
 
 match_format.findall(
-    "Let me think!<end_working_out>"\
-    f"<SOLUTION>\n2\n</SOLUTION>",
+    f"Let me think!<end_working_out><SOLUTION>\n2\n</SOLUTION>",
 )
 
 match_format.findall(
-    "<start_working_out>Let me think!<end_working_out>"\
-    f"<SOLUTION>  2  </SOLUTION>\n\n",
+    f"<start_working_out>Let me think!<end_working_out><SOLUTION>  2  </SOLUTION>\n\n",
 )
 
 """We now want to create a reward function to match the format exactly - we reward it with 3 points if it succeeds:"""
+
 
 def match_format_exactly(completions, **kwargs):
     scores = []
@@ -339,11 +372,14 @@ def match_format_exactly(completions, **kwargs):
         score = 0
         response = completion[0]["content"]
         # Match if format is seen exactly!
-        if match_format.search(response) is not None: score += 3.0
+        if match_format.search(response) is not None:
+            score += 3.0
         scores.append(score)
     return scores
 
+
 """If it fails, we want to reward the model if it at least follows the format partially, by counting each symbol:"""
+
 
 def match_format_approximately(completions, **kwargs):
     scores = []
@@ -355,21 +391,22 @@ def match_format_approximately(completions, **kwargs):
 
         # No need to reward the opening tag since we always prepend it!
         # score += 0.5 if response.count(reasoning_start) == 1 else -1.0
-        score += 0.5 if response.count(reasoning_end)   == 1 else -1.0
-        score += 0.5 if response.count(solution_start)  == 1 else -1.0
-        score += 0.5 if response.count(solution_end)    == 1 else -1.0
+        score += 0.5 if response.count(reasoning_end) == 1 else -1.0
+        score += 0.5 if response.count(solution_start) == 1 else -1.0
+        score += 0.5 if response.count(solution_end) == 1 else -1.0
         scores.append(score)
     return scores
 
+
 """Finally, we want to extract the generated answer, and reward or penalize it! We also reward it based on how close the answer is to the true one via ratios:"""
+
 
 def check_answer(prompts, completions, answer, **kwargs):
     question = prompts[0][-1]["content"]
     responses = [completion[0]["content"] for completion in completions]
 
     extracted_responses = [
-        guess.group(1)
-        if (guess := match_format.search(r)) is not None else None \
+        guess.group(1) if (guess := match_format.search(r)) is not None else None
         for r in responses
     ]
 
@@ -390,13 +427,17 @@ def check_answer(prompts, completions, answer, **kwargs):
             # Ie if the answer is within some range, reward it!
             try:
                 ratio = float(guess) / float(true_answer)
-                if   ratio >= 0.9 and ratio <= 1.1: score += 2.0
-                elif ratio >= 0.8 and ratio <= 1.2: score += 1.5
-                else: score -= 2.5 # Penalize wrong answers
+                if ratio >= 0.9 and ratio <= 1.1:
+                    score += 2.0
+                elif ratio >= 0.8 and ratio <= 1.2:
+                    score += 1.5
+                else:
+                    score -= 2.5  # Penalize wrong answers
             except:
-                score -= 4.5 # Penalize
+                score -= 4.5  # Penalize
         scores.append(score)
     return scores
+
 
 """Also sometimes it might not be 1 number as the answer, but like a sentence for example "The solution is $20" -> we extract 20.
 
@@ -404,8 +445,7 @@ We also remove possible commas for example as in 123,456
 """
 
 match_numbers = re.compile(
-    solution_start + r".*?[\s]{0,}([-]?[\d\.\,]{1,})",
-    flags = re.MULTILINE | re.DOTALL
+    solution_start + r".*?[\s]{0,}([-]?[\d\.\,]{1,})", flags=re.MULTILINE | re.DOTALL
 )
 print(match_numbers.findall("<SOLUTION>  0.34  </SOLUTION>"))
 print(match_numbers.findall("<SOLUTION>  123,456  </SOLUTION>"))
@@ -419,13 +459,13 @@ PRINTED_TIMES = 0
 global PRINT_EVERY_STEPS
 PRINT_EVERY_STEPS = 5
 
+
 def check_numbers(prompts, completions, answer, **kwargs):
     question = prompts[0][-1]["content"]
     responses = [completion[0]["content"] for completion in completions]
 
     extracted_responses = [
-        guess.group(1)
-        if (guess := match_numbers.search(r)) is not None else None \
+        guess.group(1) if (guess := match_numbers.search(r)) is not None else None
         for r in responses
     ]
 
@@ -435,7 +475,10 @@ def check_numbers(prompts, completions, answer, **kwargs):
     global PRINT_EVERY_STEPS
     if PRINTED_TIMES % PRINT_EVERY_STEPS == 0:
         print(
-            '*'*20 + f"Question:\n{question}", f"\nAnswer:\n{answer[0]}", f"\nResponse:\n{responses[0]}", f"\nExtracted:\n{extracted_responses[0]}"
+            "*" * 20 + f"Question:\n{question}",
+            f"\nAnswer:\n{answer[0]}",
+            f"\nResponse:\n{responses[0]}",
+            f"\nExtracted:\n{extracted_responses[0]}",
         )
     PRINTED_TIMES += 1
 
@@ -447,12 +490,13 @@ def check_numbers(prompts, completions, answer, **kwargs):
         try:
             true_answer = float(true_answer.strip())
             # Remove commas like in 123,456
-            guess       = float(guess.strip().replace(",", ""))
+            guess = float(guess.strip().replace(",", ""))
             scores.append(3.5 if guess == true_answer else -1.5)
         except:
             scores.append(0)
             continue
     return scores
+
 
 """Get the top 90% prompt length so we don't accidentally truncate them!
 
@@ -460,13 +504,18 @@ Ie we'll remove the top 10% long prompts.
 """
 
 tokenized = dataset.map(
-    lambda x: {"tokens" : tokenizer.apply_chat_template(x["prompt"], add_generation_prompt = True, tokenize = True)},
-    batched = True,
+    lambda x: {
+        "tokens": tokenizer.apply_chat_template(
+            x["prompt"], add_generation_prompt=True, tokenize=True
+        )
+    },
+    batched=True,
 )
 print(tokenizer.decode(tokenized[0]["tokens"]))
-tokenized = tokenized.map(lambda x: {"L" : len(x["tokens"])})
+tokenized = tokenized.map(lambda x: {"L": len(x["tokens"])})
 
 import numpy as np
+
 maximum_length = int(np.quantile(tokenized["L"], 0.9))
 print("Max Length = ", maximum_length)
 
@@ -480,40 +529,41 @@ del tokenized
 Now set up GRPO Trainer and all configurations!
 """
 
-max_prompt_length = maximum_length + 1 # + 1 just in case!
+max_prompt_length = maximum_length + 1  # + 1 just in case!
 max_completion_length = max_seq_length - max_prompt_length
 
 from vllm import SamplingParams
+
 vllm_sampling_params = SamplingParams(
-    min_p = 0.1,
-    top_p = 1.0,
-    top_k = -1,
-    seed = 3407,
-    stop = [tokenizer.eos_token],
-    include_stop_str_in_output = True,
+    min_p=0.1,
+    top_p=1.0,
+    top_k=-1,
+    seed=3407,
+    stop=[tokenizer.eos_token],
+    include_stop_str_in_output=True,
 )
 
 from trl import GRPOConfig, GRPOTrainer
-training_args = GRPOConfig(
-    vllm_sampling_params = vllm_sampling_params,
-    temperature = 1.0,
-    learning_rate = 5e-6,
-    weight_decay = 0.001,
-    warmup_ratio = 0.1,
-    lr_scheduler_type = "linear",
-    optim = "adamw_8bit",
-    logging_steps = 1,
-    per_device_train_batch_size = 1,
-    gradient_accumulation_steps = 1, # Increase to 4 for smoother training
-    num_generations = 4, # Decrease if out of memory
-    max_prompt_length = max_prompt_length,
-    max_completion_length = max_completion_length,
-    # num_train_epochs = 1, # Set to 1 for a full training run
-    max_steps = 100,
-    save_steps = 100,
-    report_to = "none", # Can use Weights & Biases
-    output_dir = "outputs",
 
+training_args = GRPOConfig(
+    vllm_sampling_params=vllm_sampling_params,
+    temperature=1.0,
+    learning_rate=5e-6,
+    weight_decay=0.001,
+    warmup_ratio=0.1,
+    lr_scheduler_type="linear",
+    optim="adamw_8bit",
+    logging_steps=1,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=1,  # Increase to 4 for smoother training
+    num_generations=4,  # Decrease if out of memory
+    max_prompt_length=max_prompt_length,
+    max_completion_length=max_completion_length,
+    # num_train_epochs = 1, # Set to 1 for a full training run
+    max_steps=100,
+    save_steps=100,
+    report_to="none",  # Can use Weights & Biases
+    output_dir="outputs",
     # For optional training + evaluation
     # fp16_full_eval = True,
     # per_device_eval_batch_size = 4,
@@ -537,17 +587,16 @@ You might have to wait 150 to 200 steps for any action. You'll probably get 0 re
 # new_dataset = dataset.train_test_split(test_size = 0.01)
 
 trainer = GRPOTrainer(
-    model = model,
-    processing_class = tokenizer,
-    reward_funcs = [
+    model=model,
+    processing_class=tokenizer,
+    reward_funcs=[
         match_format_exactly,
         match_format_approximately,
         check_answer,
         check_numbers,
     ],
-    args = training_args,
-    train_dataset = dataset,
-
+    args=training_args,
+    train_dataset=dataset,
     # For optional training + evaluation
     # train_dataset = new_dataset["train"],
     # eval_dataset = new_dataset["test"],
@@ -562,16 +611,21 @@ Now let's try the model we just trained! First, let's first try the model withou
 text = "What is the sqrt of 101?"
 
 from vllm import SamplingParams
+
 sampling_params = SamplingParams(
-    temperature = 1.0,
-    top_k = 50,
-    max_tokens = 1024,
+    temperature=1.0,
+    top_k=50,
+    max_tokens=1024,
 )
-output = model.fast_generate(
-    [text],
-    sampling_params = sampling_params,
-    lora_request = None,
-)[0].outputs[0].text
+output = (
+    model.fast_generate(
+        [text],
+        sampling_params=sampling_params,
+        lora_request=None,
+    )[0]
+    .outputs[0]
+    .text
+)
 
 output
 
@@ -584,36 +638,41 @@ model.save_lora("grpo_saved_lora")
 from safetensors import safe_open
 
 tensors = {}
-with safe_open("grpo_saved_lora/adapter_model.safetensors", framework = "pt") as f:
+with safe_open("grpo_saved_lora/adapter_model.safetensors", framework="pt") as f:
     # Verify both A and B are non zero
     for key in f.keys():
         tensor = f.get_tensor(key)
         n_zeros = (tensor == 0).sum() / tensor.numel()
-        assert(n_zeros.item() != tensor.numel())
+        assert n_zeros.item() != tensor.numel()
 
 """Now we load the LoRA and test:"""
 
 messages = [
     {"role": "system", "content": system_prompt},
-    {"role": "user",   "content": "What is the sqrt of 101?"},
+    {"role": "user", "content": "What is the sqrt of 101?"},
 ]
 
 text = tokenizer.apply_chat_template(
     messages,
-    add_generation_prompt = True, # Must add for generation
-    tokenize = False,
+    add_generation_prompt=True,  # Must add for generation
+    tokenize=False,
 )
 from vllm import SamplingParams
+
 sampling_params = SamplingParams(
-    temperature = 1.0,
-    top_k = 50,
-    max_tokens = 2048,
+    temperature=1.0,
+    top_k=50,
+    max_tokens=2048,
 )
-output = model.fast_generate(
-    text,
-    sampling_params = sampling_params,
-    lora_request = model.load_lora("grpo_saved_lora"),
-)[0].outputs[0].text
+output = (
+    model.fast_generate(
+        text,
+        sampling_params=sampling_params,
+        lora_request=model.load_lora("grpo_saved_lora"),
+    )[0]
+    .outputs[0]
+    .text
+)
 
 output
 
@@ -626,20 +685,42 @@ We also support saving to `float16` directly. Select `merged_16bit` for float16 
 """
 
 # Merge to 16bit
-if False: model.save_pretrained_merged("qwen_finetune_16bit", tokenizer, save_method = "merged_16bit",)
-if False: model.push_to_hub_merged("HF_USERNAME/qwen_finetune_16bit", tokenizer, save_method = "merged_16bit", token = "YOUR_HF_TOKEN")
+if False:
+    model.save_pretrained_merged(
+        "qwen_finetune_16bit",
+        tokenizer,
+        save_method="merged_16bit",
+    )
+if False:
+    model.push_to_hub_merged(
+        "HF_USERNAME/qwen_finetune_16bit",
+        tokenizer,
+        save_method="merged_16bit",
+        token="YOUR_HF_TOKEN",
+    )
 
 # Merge to 4bit
-if False: model.save_pretrained_merged("qwen_finetune_4bit", tokenizer, save_method = "merged_4bit",)
-if False: model.push_to_hub_merged("HF_USERNAME/qwen_finetune_4bit", tokenizer, save_method = "merged_4bit", token = "YOUR_HF_TOKEN")
+if False:
+    model.save_pretrained_merged(
+        "qwen_finetune_4bit",
+        tokenizer,
+        save_method="merged_4bit",
+    )
+if False:
+    model.push_to_hub_merged(
+        "HF_USERNAME/qwen_finetune_4bit",
+        tokenizer,
+        save_method="merged_4bit",
+        token="YOUR_HF_TOKEN",
+    )
 
 # Just LoRA adapters
 if False:
     model.save_pretrained("qwen_lora")
     tokenizer.save_pretrained("qwen_lora")
 if False:
-    model.push_to_hub("HF_USERNAME/qwen_lora", token = "YOUR_HF_TOKEN")
-    tokenizer.push_to_hub("HF_USERNAME/qwen_lora", token = "YOUR_HF_TOKEN")
+    model.push_to_hub("HF_USERNAME/qwen_lora", token="YOUR_HF_TOKEN")
+    tokenizer.push_to_hub("HF_USERNAME/qwen_lora", token="YOUR_HF_TOKEN")
 
 """### GGUF / llama.cpp Conversion
 To save to `GGUF` / `llama.cpp`, we support it natively now! We clone `llama.cpp` and we default save it to `q8_0`. We allow all methods like `q4_k_m`. Use `save_pretrained_gguf` for local saving and `push_to_hub_gguf` for uploading to HF.
@@ -653,26 +734,51 @@ Some supported quant methods (full list on our [docs page](https://unsloth.ai/do
 """
 
 # Save to 8bit Q8_0
-if False: model.save_pretrained_gguf("qwen_finetune", tokenizer,)
+if False:
+    model.save_pretrained_gguf(
+        "qwen_finetune",
+        tokenizer,
+    )
 # Remember to go to https://huggingface.co/settings/tokens for a token!
 # And change hf to your username!
-if False: model.push_to_hub_gguf("HF_USERNAME/qwen_finetune", tokenizer, token = "YOUR_HF_TOKEN")
+if False:
+    model.push_to_hub_gguf(
+        "HF_USERNAME/qwen_finetune", tokenizer, token="YOUR_HF_TOKEN"
+    )
 
 # Save to 16bit GGUF
-if False: model.save_pretrained_gguf("qwen_finetune", tokenizer, quantization_method = "f16")
-if False: model.push_to_hub_gguf("HF_USERNAME/qwen_finetune", tokenizer, quantization_method = "f16", token = "YOUR_HF_TOKEN")
+if False:
+    model.save_pretrained_gguf("qwen_finetune", tokenizer, quantization_method="f16")
+if False:
+    model.push_to_hub_gguf(
+        "HF_USERNAME/qwen_finetune",
+        tokenizer,
+        quantization_method="f16",
+        token="YOUR_HF_TOKEN",
+    )
 
 # Save to q4_k_m GGUF
-if False: model.save_pretrained_gguf("qwen_finetune", tokenizer, quantization_method = "q4_k_m")
-if False: model.push_to_hub_gguf("HF_USERNAME/qwen_finetune", tokenizer, quantization_method = "q4_k_m", token = "YOUR_HF_TOKEN")
+if False:
+    model.save_pretrained_gguf("qwen_finetune", tokenizer, quantization_method="q4_k_m")
+if False:
+    model.push_to_hub_gguf(
+        "HF_USERNAME/qwen_finetune",
+        tokenizer,
+        quantization_method="q4_k_m",
+        token="YOUR_HF_TOKEN",
+    )
 
 # Save to multiple GGUF options - much faster if you want multiple!
 if False:
     model.push_to_hub_gguf(
-        "HF_USERNAME/qwen_finetune", # Change hf to your username!
+        "HF_USERNAME/qwen_finetune",  # Change hf to your username!
         tokenizer,
-        quantization_method = ["q4_k_m", "q8_0", "q5_k_m",],
-        token = "YOUR_HF_TOKEN",
+        quantization_method=[
+            "q4_k_m",
+            "q8_0",
+            "q5_k_m",
+        ],
+        token="YOUR_HF_TOKEN",
     )
 
 """Now, use the `qwen_finetune.Q8_0.gguf` file or `qwen_finetune.Q4_K_M.gguf` file in llama.cpp.

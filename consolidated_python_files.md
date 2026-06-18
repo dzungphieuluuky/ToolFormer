@@ -1108,7 +1108,7 @@ def load_model(config: dict | None = None):
     model_cfg = cfg.get("model", {})
     lora_cfg  = cfg.get("lora",  {})
 
-    model_name = model_cfg.get("name", "unsloth/Qwen3-4B-unsloth-bnb-4bit")
+    model_name = model_cfg.get("name", "unsloth/Qwen3-4B-Base")
     max_seq    = model_cfg.get("max_seq_length", 2048)
     lora_rank  = lora_cfg.get("r", 16)
 
@@ -4886,7 +4886,7 @@ def save_model_and_tokenizer(model, tokenizer, output_dir: str) -> None:
 
 def load_model_from_path(
     model_path: str,
-    base_model_name: str = "unsloth/Qwen3-4B-unsloth-bnb-4bit",
+    base_model_name: str = "unsloth/Qwen3-4B-Base",
     max_seq_length: int = 2048,
     load_in_4bit: bool = True,
 ):

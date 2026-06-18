@@ -55,6 +55,7 @@ SEP = "=" * 80
 # Mock tokenizer that uses the same custom template as the real one
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class MockTokenizer:
     """
     Minimal tokenizer mock that renders messages using CUSTOM_CHAT_TEMPLATE.
@@ -75,7 +76,7 @@ class MockTokenizer:
         """Render messages using the custom ChatML template."""
         parts: list[str] = []
         for msg in messages:
-            role    = msg["role"]
+            role = msg["role"]
             content = msg["content"]
             parts.append(f"<|im_start|>{role}\n{content}\n<|im_end|>")
         result = "\n".join(parts)
@@ -88,16 +89,16 @@ class MockTokenizer:
 # Main
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/base_config.yaml")
-    parser.add_argument("--mode",   default="grpo", choices=["grpo", "sft"])
-    parser.add_argument("--split",  default="train", choices=["train", "test"])
-    parser.add_argument("--n",      type=int, default=1,
-                        help="Number of samples to print")
+    parser.add_argument("--mode", default="grpo", choices=["grpo", "sft"])
+    parser.add_argument("--split", default="train", choices=["train", "test"])
+    parser.add_argument("--n", type=int, default=1, help="Number of samples to print")
     args = parser.parse_args()
 
-    cfg      = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+    cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     data_cfg = cfg["data"]
 
     # Load function library
@@ -120,12 +121,14 @@ def main():
     tokenizer = MockTokenizer()
 
     for i, sample in enumerate(raw_samples):
-        arg_vals  = _deserialise_arg_values(sample.get("retrieved_argument_values"))
+        arg_vals = _deserialise_arg_values(sample.get("retrieved_argument_values"))
         retrieved = sample.get("retrieved_functions", [])
-        gt        = sample.get("ground_truth", {})
+        gt = sample.get("ground_truth", {})
 
         print(f"\n{SEP}")
-        print(f"  SAMPLE {i+1}/{len(raw_samples)}  |  mode={args.mode}  |  split={args.split}")
+        print(
+            f"  SAMPLE {i + 1}/{len(raw_samples)}  |  mode={args.mode}  |  split={args.split}"
+        )
         print(f"  id:           {sample.get('id', 'n/a')[:36]}")
         print(f"  query:        {sample['query'][:100]}")
         print(f"  function:     {sample.get('function_name', 'n/a')}")
@@ -154,7 +157,8 @@ def main():
         print("\n── EXPECTED MODEL OUTPUT FORMAT ─────────────────────────────\n")
         call_json = json.dumps(
             {"function": gt.get("function"), "arguments": gt.get("arguments", {})},
-            indent=2, ensure_ascii=False,
+            indent=2,
+            ensure_ascii=False,
         )
         print(
             f"<reasoning>\n{gt.get('reasoning', '...')}\n</reasoning>\n"
@@ -166,11 +170,13 @@ def main():
             print("\n── RETRIEVED ARGUMENT VALUES ────────────────────────────────\n")
             for param, matches in arg_vals.items():
                 print(f"  {param}:")
-                for m in (matches if isinstance(matches, list) else []):
+                for m in matches if isinstance(matches, list) else []:
                     if isinstance(m, dict):
                         score = m.get("score", "?")
-                        print(f"    {m.get('code')} → {m.get('label')}  "
-                              f"[{m.get('group')}]  score={score}")
+                        print(
+                            f"    {m.get('code')} → {m.get('label')}  "
+                            f"[{m.get('group')}]  score={score}"
+                        )
 
     # ── Summary stats ──────────────────────────────────────────────────────────
     print(f"\n{SEP}")
@@ -182,8 +188,8 @@ def main():
         for obj in reader:
             all_samples.append(obj)
 
-    wf_counts:   dict[str, int] = {}
-    fn_counts:   dict[str, int] = {}
+    wf_counts: dict[str, int] = {}
+    fn_counts: dict[str, int] = {}
     enriched_n = 0
 
     for s in all_samples:
@@ -199,7 +205,7 @@ def main():
 
     print("\nWorkflow distribution:")
     for wt, n in sorted(wf_counts.items()):
-        print(f"  {wt:20s}: {n:5d}  ({100*n/len(all_samples):.1f}%)")
+        print(f"  {wt:20s}: {n:5d}  ({100 * n / len(all_samples):.1f}%)")
 
     print("\nTop-10 functions:")
     for fn, n in sorted(fn_counts.items(), key=lambda x: -x[1])[:10]:

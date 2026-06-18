@@ -22,26 +22,26 @@ from src.algorithms.base_trainer import (
     patch_tokenizer_for_custom_roles,
     SYSTEM_PROMPT,
 )
-from src.data.retrieval    import FunctionRetriever, ArgumentValueRetriever
+from src.data.retrieval import FunctionRetriever, ArgumentValueRetriever
 from src.utils.model_utils import load_model_from_path, generate_response
-from src.utils.sandbox     import Sandbox
-from .metrics              import compute_all_metrics, aggregate_metrics, estimate_cost
+from src.utils.sandbox import Sandbox
+from .metrics import compute_all_metrics, aggregate_metrics, estimate_cost
 from src.utils.logging_utils import get_logger
 
 logger = get_logger(__name__)
 
 
 def evaluate_model(
-    model_path:            str,
-    test_dataset_path:     str,
-    function_library:      dict,
-    retriever:             FunctionRetriever,
-    sandbox:               Sandbox,
-    top_k:                 int   = 5,
-    max_new_tokens:        int   = 512,
-    model_name_tag:        str   = "model",
-    use_dataset_retrieval: bool  = True,
-    argument_values:       dict | None = None,   # full catalog for val retriever
+    model_path: str,
+    test_dataset_path: str,
+    function_library: dict,
+    retriever: FunctionRetriever,
+    sandbox: Sandbox,
+    top_k: int = 5,
+    max_new_tokens: int = 512,
+    model_name_tag: str = "model",
+    use_dataset_retrieval: bool = True,
+    argument_values: dict | None = None,  # full catalog for val retriever
 ) -> dict:
     """
     Evaluate a fine-tuned model on the held-out test set.
@@ -56,7 +56,7 @@ def evaluate_model(
     # ── Load model + patch tokenizer ──────────────────────────────────────────
     logger.info(f"[Benchmark] Loading model from {model_path}")
     model, tokenizer = load_model_from_path(model_path)
-    patch_tokenizer_for_custom_roles(tokenizer)   # ← required for "retriever" role
+    patch_tokenizer_for_custom_roles(tokenizer)  # ← required for "retriever" role
 
     # ── Optional argument value retriever ─────────────────────────────────────
     val_retriever = None
@@ -69,15 +69,13 @@ def evaluate_model(
         for obj in reader:
             test_samples.append(obj)
 
-    logger.info(
-        f"[Benchmark] {model_name_tag}: evaluating {len(test_samples)} samples"
-    )
+    logger.info(f"[Benchmark] {model_name_tag}: evaluating {len(test_samples)} samples")
 
     results: list[dict] = []
 
     for sample in tqdm(test_samples, desc=f"Eval [{model_name_tag}]"):
         query = sample["query"]
-        gt    = sample.get("ground_truth", {})
+        gt = sample.get("ground_truth", {})
 
         # Stage 1: function retrieval
         if use_dataset_retrieval and sample.get("retrieved_functions"):
@@ -91,29 +89,29 @@ def evaluate_model(
                 query, retrieved, function_library
             )
         else:
-            raw_av   = sample.get("retrieved_argument_values")
+            raw_av = sample.get("retrieved_argument_values")
             arg_vals = raw_av if raw_av else None
 
         # Build prompt using the same helper as training
         messages = build_messages_for_grpo(
-            query            = query,
-            function_names   = retrieved,
-            function_library = function_library,
-            argument_values  = arg_vals,
+            query=query,
+            function_names=retrieved,
+            function_library=function_library,
+            argument_values=arg_vals,
         )
 
         prompt = tokenizer.apply_chat_template(
             messages,
-            tokenize              = False,
-            add_generation_prompt = True,
+            tokenize=False,
+            add_generation_prompt=True,
         )
 
         # Generate
-        t0       = time.perf_counter()
+        t0 = time.perf_counter()
         response = generate_response(model, tokenizer, prompt, max_new_tokens)
-        latency  = (time.perf_counter() - t0) * 1000.0   # ms
+        latency = (time.perf_counter() - t0) * 1000.0  # ms
 
-        cost    = estimate_cost(prompt, response)
+        cost = estimate_cost(prompt, response)
         metrics = compute_all_metrics(
             response, gt, sandbox, latency, cost, function_library
         )
