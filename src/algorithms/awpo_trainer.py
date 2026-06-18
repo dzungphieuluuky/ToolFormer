@@ -58,8 +58,9 @@ class AWPOTrainer(GRPOTrainer):
     Key overrides
     ─────────────
     1. __init__          — stores AWPO hyperparams
-    2. compute_advantages — replaces GRPO normalisation with AWPO algorithm
-    3. _get_per_token_logps (or compute_loss) — widens clip when gate is open
+    2. _generate_and_score_completions — caches reasoning rewards
+    3. compute_advantages — replaces GRPO normalisation with AWPO algorithm
+    4. compute_loss — widens clip when gate is open (uses self._last_clip_delta)
     """
 
     def __init__(
@@ -87,26 +88,35 @@ class AWPOTrainer(GRPOTrainer):
             },
         )
 
-        # Cache for reasoning rewards (populated by reward_funcs call)
+        # Cache for reasoning rewards (populated by _generate_and_score_completions)
         # Maps completion text → reasoning score
         self._reasoning_cache: dict[str, float] = {}
 
+        # Last computed adaptive clip delta (set in compute_advantages)
+        self._last_clip_delta: float = 0.0
+
         logger.info(f"[AWPO] τ={self.tau}  δ_clip={self.adaptive_clip_delta}")
 
-    # ── Reasoning reward cache ────────────────────────────────────────────────
+    # ── Populate reasoning cache during rollout generation ────────────────────
 
-    def _cache_reasoning_rewards(self, completions: list[str]) -> None:
-        """Pre-compute and cache reasoning quality for all completions."""
-        for c in completions:
-            if c not in self._reasoning_cache:
-                self._reasoning_cache[c] = reasoning_quality(c)
+    def _generate_and_score_completions(self, prompts, **kwargs):
+        """
+        Override to compute reasoning scores for each completion.
+        TRL calls this to generate rollouts and compute rewards.
+        We interleave to fill the reasoning cache.
+        """
+        completions, rewards = super()._generate_and_score_completions(prompts, **kwargs)
+        for comp in completions:
+            if comp not in self._reasoning_cache:
+                self._reasoning_cache[comp] = reasoning_quality(comp)
+        return completions, rewards
 
     # ── AWPO advantage computation  (core override) ───────────────────────────
 
     def compute_advantages(
         self,
-        rewards: torch.Tensor,  # [B]  outcome rewards from reward_funcs
-        group_indices: torch.Tensor,  # [B]  which group each sample belongs to
+        rewards: torch.Tensor,          # [B]  outcome rewards from reward_funcs
+        group_indices: torch.Tensor,    # [B]  which group each sample belongs to
         completions: list[str] | None = None,
     ) -> tuple[torch.Tensor, float]:
         """
@@ -138,6 +148,7 @@ class AWPOTrainer(GRPOTrainer):
                     self._reasoning_cache.get(completions[i], 0.0) for i in g_idx
                 ]
             else:
+                # Fallback: if completions not provided, compute on the fly (expensive)
                 reason_r = [0.0] * len(g_idx)
 
             # Compute AWPO advantages for this group
@@ -151,8 +162,9 @@ class AWPOTrainer(GRPOTrainer):
                 advantages[global_idx] = group_advs[local_idx]
             clip_deltas.append(clip_delta)
 
-        mean_clip_delta = sum(clip_deltas) / max(len(clip_deltas), 1)
-        return advantages, mean_clip_delta
+        # Store the mean clip delta for use in compute_loss
+        self._last_clip_delta = sum(clip_deltas) / max(len(clip_deltas), 1)
+        return advantages, self._last_clip_delta
 
     # ── Adaptive clipping in loss ─────────────────────────────────────────────
 
@@ -171,7 +183,6 @@ class AWPOTrainer(GRPOTrainer):
         than outcome rewards; the standard ε clip is too tight and causes
         premature saturation.  We widen it by (1 + δ) per the paper.
         """
-        # Get the adaptive delta stored from last compute_advantages call
         clip_delta = getattr(self, "_last_clip_delta", 0.0)
 
         if clip_delta > 0.0:

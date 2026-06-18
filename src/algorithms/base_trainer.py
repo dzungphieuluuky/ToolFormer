@@ -47,22 +47,36 @@ then work correctly without further changes.
 from __future__ import annotations
 
 import json
+import warnings
 from pathlib import Path
 from typing import Any
 
 import torch
 from transformers import AutoTokenizer
 
+# ── Conditional imports for dataset loading ──────────────────────────────────
+try:
+    import jsonlines
+except ImportError:
+    jsonlines = None
+    warnings.warn("jsonlines not installed; dataset loading will fail.", ImportWarning)
+
+try:
+    from datasets import Dataset
+except ImportError:
+    Dataset = None
+    warnings.warn("datasets not installed; dataset loading will fail.", ImportWarning)
+
+try:
+    from src.data.retrieval import ArgumentValueRetriever
+except ImportError:
+    ArgumentValueRetriever = None
+    warnings.warn("ArgumentValueRetriever not available; argument values will be skipped.", ImportWarning)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Custom chat template that handles arbitrary roles (including "retriever")
 # ──────────────────────────────────────────────────────────────────────────────
-
-# This Jinja2 template replaces Qwen3's default.  It preserves the standard
-# system / user / assistant / tool behaviour and adds a generic fallback that
-# renders any unknown role (e.g. "retriever") as a plain ChatML block.
-# The enable_thinking flag is honoured for the final assistant turn only
-# (consistent with Qwen3 best practice).
 
 CUSTOM_CHAT_TEMPLATE = (
     "{%- for message in messages %}"
@@ -77,7 +91,6 @@ CUSTOM_CHAT_TEMPLATE = (
     "{%- elif message.role == 'retriever' %}"
     "{{- '<|im_start|>retriever\n' + message.content + '\n<|im_end|>\n' }}"
     "{%- else %}"
-    # Generic fallback — handles "retriever" and any future custom roles
     "{{- '<|im_start|>' + message.role + '\n' + message.content + '\n<|im_end|>\n' }}"
     "{%- endif %}"
     "{%- endfor %}"
@@ -88,13 +101,7 @@ CUSTOM_CHAT_TEMPLATE = (
 
 
 def patch_tokenizer_for_custom_roles(tokenizer) -> None:
-    """
-    Register CUSTOM_CHAT_TEMPLATE on the tokenizer so that
-    apply_chat_template() correctly renders the "retriever" role
-    (and any other non-standard roles).
-
-    Must be called once immediately after FastLanguageModel.from_pretrained().
-    """
+    """Register CUSTOM_CHAT_TEMPLATE so apply_chat_template() handles 'retriever'."""
     tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
     print("[base_trainer] Custom chat template registered (supports 'retriever' role).")
 
@@ -404,7 +411,7 @@ def load_grpo_dataset(
     tokenizer,
     argument_values_catalog:  dict | None = None,
     telco_retriever           = None,
-) -> "datasets.Dataset":
+) -> "Dataset":
     """
     Load the enriched train_dataset.jsonl for GRPOTrainer.
 
@@ -414,8 +421,8 @@ def load_grpo_dataset(
       3. argument_values_catalog  — on-the-fly ArgumentValueRetriever
       4. None                     — no argument values in prompt
     """
-    from datasets import Dataset
-    import jsonlines
+    if Dataset is None or jsonlines is None:
+        raise ImportError("Required packages 'datasets' and/or 'jsonlines' are not installed.")
 
     raw_samples: list[dict] = []
     with jsonlines.open(jsonl_path) as reader:
@@ -426,8 +433,10 @@ def load_grpo_dataset(
 
     val_retriever = None
     if telco_retriever is None and argument_values_catalog is not None:
-        from src.data.retrieval import ArgumentValueRetriever
-        val_retriever = ArgumentValueRetriever(argument_values_catalog)
+        if ArgumentValueRetriever is not None:
+            val_retriever = ArgumentValueRetriever(argument_values_catalog)
+        else:
+            print("[base_trainer] ArgumentValueRetriever not available; skipping argument values.")
 
     formatted = []
     for sample in raw_samples:
@@ -480,10 +489,10 @@ def load_sft_dataset(
     tokenizer,
     argument_values_catalog:  dict | None = None,
     telco_retriever           = None,
-) -> "datasets.Dataset":
+) -> "Dataset":
     """Load the enriched train_dataset.jsonl for SFTTrainer."""
-    from datasets import Dataset
-    import jsonlines
+    if Dataset is None or jsonlines is None:
+        raise ImportError("Required packages 'datasets' and/or 'jsonlines' are not installed.")
 
     raw_samples: list[dict] = []
     with jsonlines.open(jsonl_path) as reader:
@@ -492,8 +501,8 @@ def load_sft_dataset(
 
     val_retriever = None
     if telco_retriever is None and argument_values_catalog is not None:
-        from src.data.retrieval import ArgumentValueRetriever
-        val_retriever = ArgumentValueRetriever(argument_values_catalog)
+        if ArgumentValueRetriever is not None:
+            val_retriever = ArgumentValueRetriever(argument_values_catalog)
 
     formatted = []
     for sample in raw_samples:
@@ -525,8 +534,7 @@ def load_sft_dataset(
 
 
 def _deserialise_arg_values(raw: dict | None) -> dict | None:
-    """
-    Convert the plain-dict form stored in JSONL back to a dict that
+    """Convert the plain-dict form stored in JSONL back to a dict that
     build_argument_values_block() can consume.  Returns None if raw is falsy.
     """
     if not raw:
@@ -572,7 +580,7 @@ def load_model(config: dict | None = None):
     model = FastLanguageModel.get_peft_model(
         model,
         r                          = lora_rank,
-        lora_alpha                 = lora_cfg.get("lora_alpha", lora_rank),
+        lora_alpha                 = lora_cfg.get("lora_alpha", 2 * lora_rank),
         lora_dropout               = lora_cfg.get("lora_dropout", 0.0),
         target_modules             = lora_cfg.get("target_modules", [
             "q_proj", "k_proj", "v_proj", "o_proj",
