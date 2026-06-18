@@ -560,7 +560,7 @@ def load_model(config: dict | None = None):
     model_cfg = cfg.get("model", {})
     lora_cfg  = cfg.get("lora",  {})
 
-    model_name = model_cfg.get("name", "unsloth/qwen3-4b-unsloth-bnb-4bit")
+    model_name = model_cfg.get("name", "unsloth/Qwen3-4B-unsloth-bnb-4bit")
     max_seq    = model_cfg.get("max_seq_length", 2048)
     lora_rank  = lora_cfg.get("r", 16)
 

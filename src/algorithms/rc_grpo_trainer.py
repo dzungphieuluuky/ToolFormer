@@ -19,28 +19,18 @@ Phase 2 — RC-GRPO RL  (this file)
     Key modification over vanilla GRPO:
     Within each rollout group of size G, sample reward tokens
     with a CONTROLLED MIX:
-        ~50% of rollouts conditioned on <|high_reward|>
-        ~50% of rollouts conditioned on <|low_reward|>
+        p_high = proportion of successful trajectories in RCTP dataset
+        ~p_high rollouts conditioned on <|high_reward|>
+        ~1-p_high rollouts conditioned on <|low_reward|>
 
     This is the core innovation: it GUARANTEES within-group diversity
     even when the base policy has collapsed to near-deterministic behaviour
     (the vanishing advantage problem).
-
-    After diversity injection, standard GRPO advantage normalisation works:
-        A_j = (R_j - μ_g) / (σ_g + ε)
-    Because R_j now varies (high-token rollouts → R=1, low-token → R=0),
-    the advantage is non-zero and training signal is restored.
-
-Paper Figure 1 contrast:
-    Standard GRPO: τ1=1, τ2=0, τ3=0, τ4=1, τ5=1 → μ_g=0.6, weak signal
-    RC-GRPO:       τ1=1, τ2=1, τ3=1, τ4=1, τ5=1 → all high → strong signal
-                   (because high-token conditioning works after RCTP-FT)
 """
 
 from __future__ import annotations
 
 import json
-import random
 from pathlib import Path
 from typing import Any
 
@@ -92,20 +82,38 @@ def inject_diverse_reward_tokens(
     n_high = max(1, round(num_generations * high_fraction))
     n_low = num_generations - n_high
 
-    def _add_token(example):
-        # Deterministic assignment based on sample index within its group.
-        # During actual rollouts the trainer will replicate this sample
-        # num_generations times; we pre-tag the base sample and let the
-        # trainer see the token in the prompt.
-        # For simplicity (TRL doesn't expose per-rollout prompts), we
-        # randomly assign at dataset-map time; within a batch the mix
-        # will statistically approximate 50/50.
-        token = high_token if random.random() < high_fraction else low_token
-        example["prompt"] = token + "\n" + example["prompt"]
+    def _add_token(example, idx):
+        # Deterministic assignment based on sample index
+        if (idx % num_generations) < n_high:
+            token = high_token
+        else:
+            token = low_token
+        if not example["prompt"].startswith(token):
+            example["prompt"] = token + "\n" + example["prompt"]
         example["reward_token"] = token
         return example
 
-    return dataset.map(_add_token)
+    return dataset.map(_add_token, with_indices=True)
+
+
+def compute_high_fraction_from_rctp_dataset(rctp_dataset_path: str) -> float:
+    """
+    Compute the proportion of high-reward trajectories in the RCTP dataset.
+    This is used as the sampling probability p_high in Phase 2.
+    """
+    import jsonlines
+
+    total = 0
+    high = 0
+    with jsonlines.open(rctp_dataset_path) as reader:
+        for obj in reader:
+            total += 1
+            # Expect a field 'reward' or 'ground_truth' indicating success
+            # We'll assume the dataset has a 'reward' key (1 for high, 0 for low)
+            reward = obj.get("reward", 0)
+            if reward == 1:
+                high += 1
+    return high / max(total, 1)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -127,10 +135,7 @@ class RCGRPOTrainer(GRPOTrainer):
 
     @classmethod
     def register_reward_tokens(cls, tokenizer) -> None:
-        """
-        Register <|high_reward|> and <|low_reward|> as special tokens.
-        Must be done BEFORE RCTP-FT so both phases use the same vocabulary.
-        """
+        """Register <|high_reward|> and <|low_reward|> as special tokens."""
         new_tokens = [HIGH_REWARD_TOKEN, LOW_REWARD_TOKEN]
         existing = set(tokenizer.additional_special_tokens)
         to_add = [t for t in new_tokens if t not in existing]
@@ -183,25 +188,33 @@ def train_rc_grpo(config: dict) -> None:
 
     dataset = load_grpo_dataset(data_cfg["train_path"], function_library, tokenizer)
 
-    # ── 4. Inject diverse reward tokens (Phase-2 sampling strategy) ──────────
+    # ── 4. Compute high_fraction from RCTP dataset ───────────────────────────
+    rctp_dataset_path = data_cfg.get("rctp_dataset_path")
+    if rctp_dataset_path and Path(rctp_dataset_path).exists():
+        high_fraction = compute_high_fraction_from_rctp_dataset(rctp_dataset_path)
+        logger.info(f"[RC-GRPO] Computed high_fraction={high_fraction:.3f} from RCTP dataset.")
+    else:
+        high_fraction = rc_cfg.get("high_fraction", 0.5)
+        logger.warning(
+            f"[RC-GRPO] No RCTP dataset found; using fixed high_fraction={high_fraction}."
+        )
+
+    # ── 5. Inject diverse reward tokens (Phase-2 sampling strategy) ──────────
     num_gen = config.get("training", {}).get("num_generations", 8)
     dataset = inject_diverse_reward_tokens(
         dataset,
         num_generations=num_gen,
-        high_fraction=rc_cfg.get("high_fraction", 0.5),
+        high_fraction=high_fraction,
     )
-    logger.info(
-        f"[RC-GRPO] Reward tokens injected (high_fraction="
-        f"{rc_cfg.get('high_fraction', 0.5)})."
-    )
+    logger.info(f"[RC-GRPO] Reward tokens injected (high_fraction={high_fraction}).")
 
-    # ── 5. Build GRPOConfig ───────────────────────────────────────────────────
+    # ── 6. Build GRPOConfig ───────────────────────────────────────────────────
     grpo_args = build_grpo_config(
         config,
         output_dir=train_cfg.get("output_dir", "outputs/rc_grpo_model"),
     )
 
-    # ── 6. Trainer ────────────────────────────────────────────────────────────
+    # ── 7. Trainer ────────────────────────────────────────────────────────────
     trainer = RCGRPOTrainer(
         model=model,
         processing_class=tokenizer,

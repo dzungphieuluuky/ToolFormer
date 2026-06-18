@@ -628,7 +628,7 @@ sft:
 
 All three algorithms use the same base:
 
-**Model base:** `unsloth/qwen3-4b-unsloth-bnb-4bit`
+**Model base:** `unsloth/Qwen3-4B-unsloth-bnb-4bit`
 **LoRA:** r=16, α=16, dropout=0, all projection matrices
 **Optimiser:** AdamW 8-bit, cosine LR schedule
 **Rollouts:** vLLM (`fast_inference=True`), 8 generations per prompt
