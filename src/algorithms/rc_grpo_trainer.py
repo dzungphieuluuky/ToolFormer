@@ -67,33 +67,37 @@ def inject_diverse_reward_tokens(
     high_fraction: float = 0.5,
 ) -> Any:
     """
-    For each prompt, pre-assign a reward token schedule so that within
-    the GRPO rollout group approximately `high_fraction` of the G rollouts
-    are conditioned on <|high_reward|> and the rest on <|low_reward|>.
+    Expand each dataset sample into `num_generations` copies and assign
+    reward-conditioning tokens so that approximately `high_fraction` of
+    the copies use the high reward token and the rest the low token.
 
-    Implementation note:
-    TRL's GRPOTrainer calls the prompt G times (num_generations) for each
-    sample.  We create G copies of each sample with alternating tokens,
-    then shuffle within each group so the model doesn't learn position bias.
-
-    The token is prepended to the prompt string BEFORE the chat template
-    is applied, matching the RCTP-FT training format exactly.
+    We return a flattened dataset with G copies per original sample.
+    Within each expanded group the order is shuffled deterministically
+    (seeded by the original sample index) to avoid position bias.
     """
+    import random
+
     n_high = max(1, round(num_generations * high_fraction))
-    n_low = num_generations - n_high
 
-    def _add_token(example, idx):
-        # Deterministic assignment based on sample index
-        if (idx % num_generations) < n_high:
-            token = high_token
-        else:
-            token = low_token
-        if not example["prompt"].startswith(token):
-            example["prompt"] = token + "\n" + example["prompt"]
-        example["reward_token"] = token
-        return example
+    def _expand(example, idx):
+        out = []
+        for g in range(num_generations):
+            ex = dict(example)
+            if g < n_high:
+                token = high_token
+            else:
+                token = low_token
+            if not ex["prompt"].startswith(token):
+                ex["prompt"] = token + "\n" + ex["prompt"]
+            ex["reward_token"] = token
+            out.append(ex)
+        # Deterministic shuffle per-sample to avoid position bias
+        rnd = random.Random(int(idx))
+        rnd.shuffle(out)
+        return out
 
-    return dataset.map(_add_token, with_indices=True)
+    # Use flat_map to expand each example into `num_generations` entries
+    return dataset.flat_map(_expand, with_indices=True)
 
 
 def compute_high_fraction_from_rctp_dataset(rctp_dataset_path: str) -> float:

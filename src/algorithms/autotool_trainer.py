@@ -244,6 +244,24 @@ def train_autotool(config: dict) -> None:
 
     model, tokenizer = load_model(config)
 
+    # Register reasoning/tool tags as special tokens so token-type masking works reliably
+    try:
+        special = ["<reasoning>", "</reasoning>", "<tool_call>", "</tool_call>"]
+        existing = set(getattr(tokenizer, "additional_special_tokens", [])) | set(
+            getattr(tokenizer, "all_special_tokens", [])
+        )
+        to_add = [t for t in special if t not in existing]
+        if to_add:
+            tokenizer.add_special_tokens({"additional_special_tokens": to_add})
+            # If model supports resizing embeddings, do so
+            try:
+                model.resize_token_embeddings(len(tokenizer))
+            except Exception:
+                pass
+            logger.info(f"[AutoTool] Registered special tokens: {to_add}")
+    except Exception:
+        logger.debug("[AutoTool] Failed to register special tokens; continuing.")
+
     with open(data_cfg["function_library_path"], "r") as fh:
         function_library = json.load(fh)
 

@@ -105,17 +105,16 @@ class AWPOTrainer(GRPOTrainer):
         """
         AWPO advantage with continuous variance gate and difficulty weighting.
 
-        Returns
-        ───────
-        (advantages, mixing_weight_avg)
-            advantages         : [B] float tensor
-            mixing_weight_avg  : average ρ_g over groups, used to shrink clip
+        Implements Eq.20-24 more faithfully by iteratively solving for
+        ρ = σ_mix / (σ_out + σ_mix + eps).  Uses a small fixed-point loop
+        to compute ρ per group, then forms the mixed reward and advantages.
         """
         B = rewards.shape[0]
         advantages = torch.zeros(B, dtype=torch.float32)
         mixing_weights: list[float] = []
 
         unique_groups = group_indices.unique().tolist()
+        eps = 1e-8
 
         for gid in unique_groups:
             mask = (group_indices == gid).nonzero(as_tuple=True)[0]
@@ -132,36 +131,37 @@ class AWPOTrainer(GRPOTrainer):
             else:
                 reason_r = [0.0] * len(g_idx)
 
-            # ── Group statistics ──────────────────────────────────────────────
+            # Group statistics
             n = len(out_r)
             mu_out = sum(out_r) / n
             sigma2_out = sum((r - mu_out) ** 2 for r in out_r) / n
-            sigma_out = math.sqrt(sigma2_out + 1e-8)
+            sigma_out = math.sqrt(sigma2_out + eps)
 
-            # Mixed rewards (initially with ρ=0 to compute variance)
-            # We need to compute ρ iteratively? Paper uses ρ = σ_mix/(σ_out+σ_mix)
-            # We'll compute ρ based on outcome variance only (simplified).
-            # For exact implementation, we'd compute σ_mix from mixed rewards.
-            # We'll approximate ρ = 1 / (1 + σ_out)  (so high variance → low mixing)
-            # Actually Eq.20: ρ = σ_mix / (σ_out + σ_mix). We'll set ρ based on σ_out.
-            # If σ_out is high, outcome is already informative → ρ low.
-            # If σ_out is low, outcome is uniform → ρ high.
-            # We'll use a simple mapping: ρ = max(0, 1 - σ_out)
-            # This is a reasonable heuristic; the paper uses raw variances.
-            # For now, we'll directly compute ρ = 1 - σ_out (clipped to [0,1]).
-            rho = max(0.0, min(1.0, 1.0 - sigma_out))
+            # Iteratively solve for rho = sigma_mix / (sigma_out + sigma_mix + eps)
+            # Start with rho = 0.5*(1 - sigma_out) clipped to [0,1]
+            rho = max(0.0, min(1.0, 0.5 * (1.0 - sigma_out)))
+            for _ in range(10):
+                mixed = [
+                    (1 - rho) * r_out + rho * r_rea for r_out, r_rea in zip(out_r, reason_r)
+                ]
+                mu_mix = sum(mixed) / n
+                sigma_mix = math.sqrt(sum((r - mu_mix) ** 2 for r in mixed) / n + eps)
+                new_rho = sigma_mix / (sigma_out + sigma_mix + eps)
+                if abs(new_rho - rho) < 1e-4:
+                    rho = new_rho
+                    break
+                rho = new_rho
 
             # Difficulty weight
             w = 4.0 * mu_out * (1.0 - mu_out)
 
-            # Mixed reward
+            # Final mixed rewards and normalisation
             mixed = [
                 (1 - rho) * r_out + rho * r_rea for r_out, r_rea in zip(out_r, reason_r)
             ]
-
-            # Normalise mixed rewards within group
             mu_mix = sum(mixed) / n
-            sigma_mix = math.sqrt(sum((r - mu_mix) ** 2 for r in mixed) / n + 1e-8)
+            sigma_mix = math.sqrt(sum((r - mu_mix) ** 2 for r in mixed) / n + eps)
+            sigma_mix = max(sigma_mix, eps)
 
             # AWPO advantages
             group_advs = [w * (r - mu_mix) / sigma_mix for r in mixed]
