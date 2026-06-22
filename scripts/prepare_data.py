@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from omegaconf import OmegaConf
 from src.data.excel_parser import parse_telecom_functions, load_function_schema
-from src.data.dataset_generator import TelcoDatasetGenerator
+from data.dataset_generator import TelcoDatasetGenerator
 from src.data.retrieval import (
     FunctionRetriever,
     ArgumentValueRetriever,
