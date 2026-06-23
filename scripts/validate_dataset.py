@@ -284,6 +284,24 @@ def check_cross_split_function_leakage(
                 )
     return errs
 
+def check_calls_nonempty(sample: dict) -> list[str]:
+    """Check that non-abstention samples have non-empty ground_truth.calls."""
+    errs = []
+    wf = sample.get("workflow_type")
+    if wf == "abstention":
+        return errs
+    gt = sample.get("ground_truth")
+    if not isinstance(gt, dict):
+        errs.append("non-abstention sample: ground_truth is missing or not a dict")
+        return errs
+    calls = gt.get("calls")
+    if not isinstance(calls, list) or len(calls) == 0:
+        errs.append(
+            f"non-abstention sample (workflow_type={wf!r}) has empty or missing ground_truth.calls"
+        )
+    return errs
+
+
 
 # ── Orchestration ───────────────────────────────────────────────────────
 
@@ -324,7 +342,7 @@ def validate_all(data_dir: str, output_path: str | None = None) -> dict:
 
     for split_name, samples, schema_set in [
         ("train", train_samples, all_train_functions),
-        ("test", test_samples, all_test_functions),
+        ("test", test_samples, set(function_library.keys())),
     ]:
         split_report: list[dict] = []
         passed = 0
@@ -356,6 +374,7 @@ def validate_all(data_dir: str, output_path: str | None = None) -> dict:
             all_errors.extend(
                 check_retrieved_argument_values(sample, argument_values)
             )
+            all_errors.extend(check_calls_nonempty(sample))
 
             if all_errors:
                 entry["errors"] = all_errors
@@ -376,12 +395,13 @@ def validate_all(data_dir: str, output_path: str | None = None) -> dict:
         report["summary"]["passed"] += passed
         report["summary"]["failed"] += failed
 
-        # Cross-split function leakage
-        leaks = check_cross_split_function_leakage(samples, schema_set, split_name)
-        if leaks:
-            report["cross_split_leaks"].extend(
-                {"split": split_name, "error": e} for e in leaks
-            )
+        # Cross-split function leakage (only check train → test-only functions)
+        if split_name == "train":
+            leaks = check_cross_split_function_leakage(samples, schema_set, split_name)
+            if leaks:
+                report["cross_split_leaks"].extend(
+                    {"split": split_name, "error": e} for e in leaks
+                )
 
     # Duplicate IDs across train+test
     dups = check_duplicate_ids(train_samples, test_samples)

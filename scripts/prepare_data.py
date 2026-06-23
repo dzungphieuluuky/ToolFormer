@@ -31,9 +31,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from omegaconf import OmegaConf
-from src.data.excel_parser import parse_telecom_functions, load_function_schema
-from src.data.dataset_generator import TelcoDatasetGenerator
-from src.data.retrieval import (
+from scripts.excel_parser import parse_telecom_functions, load_function_schema
+from scripts.data_generator import TelcoDatasetGenerator
+from scripts.retrieval import (
     FunctionRetriever,
     ArgumentValueRetriever,
     TelcoRetriever,
@@ -175,6 +175,11 @@ def main():
     )
     parser.add_argument(
         "--total", type=int, default=None, help="Override total sample count"
+    )
+    parser.add_argument(
+        "--output-dir", default=None,
+        help="Output directory for final enriched datasets (train/test_dataset.jsonl). "
+             "Schemas, index, and argument values remain in the original processed dir."
     )
     args = parser.parse_args()
 
@@ -362,8 +367,14 @@ def main():
 
     # ── Step 5: Enrich dataset with argument values ────────────────────────────
     # Final output paths (what trainers load)
-    final_train_path = data_cfg.get("train_path", "data/processed/train_dataset.jsonl")
-    final_test_path  = data_cfg.get("test_path", "data/processed/test_dataset.jsonl")
+    if args.output_dir:
+        out_dir = Path(args.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        final_train_path = str(out_dir / "train_dataset.jsonl")
+        final_test_path  = str(out_dir / "test_dataset.jsonl")
+    else:
+        final_train_path = data_cfg.get("train_path", "data/processed/train_dataset.jsonl")
+        final_test_path  = data_cfg.get("test_path", "data/processed/test_dataset.jsonl")
 
     if not args.skip_enrichment:
         val_retriever = ArgumentValueRetriever(
