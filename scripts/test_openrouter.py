@@ -22,7 +22,7 @@ try:
     resp = client.chat.completions.create(
         model=MODEL,
         messages=[{"role": "user", "content": 'Reply with {"ok": true} only.'}],
-        max_tokens=16,
+        max_tokens =16,
         temperature=0.0,
     )
     print("✓ Model OK:", resp.choices[0].message.content)

@@ -65,7 +65,7 @@ def split_library(
         test_names = set(shuffled[-reserved_test_functions:])
     else:
         test_names = set(test_funcs)
-        missing = test_names - set(func_names)
+        missing    = test_names - set(func_names)
         if missing:
             raise ValueError(f"Test function(s) not in library: {missing}")
 
@@ -94,15 +94,15 @@ def enrich_dataset_with_arg_values(
             samples.append(obj)
 
     enriched_count = 0
-    out_samples = []
+    out_samples    = []
 
     for sample in samples:
-        query = sample["query"]
+        query     = sample["query"]
         retrieved = sample.get("retrieved_functions", [])
 
         arg_vals = val_retriever.retrieve_for_functions(
             query=query,
-            function_names=retrieved,
+            function_names  =retrieved,
             function_library=function_library,
         )
 
@@ -179,18 +179,18 @@ def main():
     args = parser.parse_args()
 
     # ── Load config ───────────────────────────────────────────────────────────
-    cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
-    data_cfg = cfg.get("data", {})
-    dg_cfg = cfg.get("dataset_generation", {})
-    ret_cfg = cfg.get("retrieval", {})
+    cfg       = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+    data_cfg  = cfg.get("data", {})
+    dg_cfg    = cfg.get("dataset_generation", {})
+    ret_cfg   = cfg.get("retrieval", {})
     split_cfg = dg_cfg.get("split", {})
 
     # ── Step 1: Build / load function library ─────────────────────────────────
-    train_schema_path = args.train_schema
-    test_schema_path = args.test_schema
+    train_schema_path  = args.train_schema
+    test_schema_path   = args.test_schema
     single_schema_path = args.schema or data_cfg.get("function_schema_path")
-    excel_path = args.excel or "data/raw/telecom_functions.xlsx"
-    lib_path = data_cfg.get(
+    excel_path         = args.excel or "data/raw/telecom_functions.xlsx"
+    lib_path           = data_cfg.get(
         "function_library_path", "data/processed/function_library.json"
     )
 
@@ -232,19 +232,19 @@ def main():
         logger.info(f"Full function library saved → {lib_path}")
 
         # Split into train / test schemas
-        test_funcs = split_cfg.get("test_function_names")
+        test_funcs     = split_cfg.get("test_function_names")
         reserved_count = split_cfg.get("reserved_test_functions", 5)
 
         train_library, test_library = split_library(
             library,
-            test_funcs=test_funcs,
+            test_funcs             =test_funcs,
             reserved_test_functions=reserved_count,
         )
 
         out_dir = Path(data_cfg.get("processed_dir", "data/processed"))
         out_dir.mkdir(parents=True, exist_ok=True)
         train_schema_path = out_dir / "function_schema_train.json"
-        test_schema_path = out_dir / "function_schema_test.json"
+        test_schema_path  = out_dir / "function_schema_test.json"
 
         with open(train_schema_path, "w", encoding="utf-8") as fh:
             json.dump(train_library, fh, indent=2, ensure_ascii=False)
@@ -295,10 +295,10 @@ def main():
 
     # ── Step 3: Build retrieval index ─────────────────────────────────────────
     logger.info("Building retrieval index...")
-    index_dir = data_cfg.get("retrieval_index_dir", "data/processed/retrieval_index")
+    index_dir      = data_cfg.get("retrieval_index_dir", "data/processed/retrieval_index")
     func_retriever = FunctionRetriever(
         function_library=full_library,
-        method=ret_cfg.get("method", "hybrid"),
+        method       =ret_cfg.get("method", "hybrid"),
         encoder_model=ret_cfg.get(
             "encoder_model", "sentence-transformers/all-MiniLM-L6-v2"
         ),
@@ -324,23 +324,23 @@ def main():
 
         generator = TelcoDatasetGenerator.from_schemas(
             train_schema_path=str(train_schema_path),
-            test_schema_path=str(test_schema_path),
-            provider=dg_cfg.get("provider", "openrouter"),
-            model=dg_cfg.get("model", "meta-llama/llama-3.3-70b-instruct"),
-            api_key=os.getenv(dg_cfg.get("api_key_env", "OPENROUTER_API_KEY")),
-            base_url=dg_cfg.get("base_url"),
-            max_workers=dg_cfg.get("max_workers", 8),
+            test_schema_path   =str(test_schema_path),
+            provider           =dg_cfg.get("provider", "openrouter"),
+            model              =dg_cfg.get("model", "meta-llama/llama-3.3-70b-instruct"),
+            api_key            =os.getenv(dg_cfg.get("api_key_env", "OPENROUTER_API_KEY")),
+            base_url           =dg_cfg.get("base_url"),
+            max_workers        =dg_cfg.get("max_workers", 8),
             requests_per_minute=dg_cfg.get("requests_per_minute", 500),
-            temperature=dg_cfg.get("temperature", 0.9),
-            max_tokens=dg_cfg.get("max_tokens", 1024),
-            seed=dg_cfg.get("seed", 42),
+            temperature        =dg_cfg.get("temperature", 0.9),
+            max_tokens         =dg_cfg.get("max_tokens", 1024),
+            seed               =dg_cfg.get("seed", 42),
         )
 
         train_samples, test_samples = generator.generate(
-            total=total,
-            output_dir=data_cfg.get("processed_dir", "data/processed"),
+            total                =total,
+            output_dir           =data_cfg.get("processed_dir", "data/processed"),
             workflow_distribution=dg_cfg.get("workflow_distribution"),
-            train_split=dg_cfg.get("train_split", 0.89),
+            train_split          =dg_cfg.get("train_split", 0.89),
         )
         logger.info(
             f"Generation complete: train={len(train_samples)}, test={len(test_samples)}"
@@ -363,7 +363,7 @@ def main():
     # ── Step 5: Enrich dataset with argument values ────────────────────────────
     # Final output paths (what trainers load)
     final_train_path = data_cfg.get("train_path", "data/processed/train_dataset.jsonl")
-    final_test_path = data_cfg.get("test_path", "data/processed/test_dataset.jsonl")
+    final_test_path  = data_cfg.get("test_path", "data/processed/test_dataset.jsonl")
 
     if not args.skip_enrichment:
         val_retriever = ArgumentValueRetriever(
@@ -374,9 +374,9 @@ def main():
         if Path(raw_train_path).exists():
             logger.info("Enriching train dataset with argument values...")
             enrich_dataset_with_arg_values(
-                raw_path=raw_train_path,
-                output_path=final_train_path,
-                val_retriever=val_retriever,
+                raw_path        =raw_train_path,
+                output_path     =final_train_path,
+                val_retriever   =val_retriever,
                 function_library=full_library,
             )
         else:
@@ -385,9 +385,9 @@ def main():
         if Path(raw_test_path).exists():
             logger.info("Enriching test dataset with argument values...")
             enrich_dataset_with_arg_values(
-                raw_path=raw_test_path,
-                output_path=final_test_path,
-                val_retriever=val_retriever,
+                raw_path        =raw_test_path,
+                output_path     =final_test_path,
+                val_retriever   =val_retriever,
                 function_library=full_library,
             )
         else:
@@ -427,8 +427,8 @@ def _print_summary(train_path: str, test_path: str) -> None:
             continue
 
         workflow_counts: dict[str, int] = {}
-        func_counts: dict[str, int] = {}
-        arg_enriched = 0
+        func_counts: dict[str, int]     = {}
+        arg_enriched                    = 0
 
         for s in samples:
             wt = s.get("workflow_type", "unknown")

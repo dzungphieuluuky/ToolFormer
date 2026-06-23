@@ -22,7 +22,7 @@ def consolidate_py_files(
         include_relative: If True, use paths relative to input_dir in headings.
     """
     input_path = Path(input_dir).resolve()
-    py_files = []
+    py_files   = []
 
     # Recursively collect all .py files
     for root, dirs, files in os.walk(input_path):
@@ -100,8 +100,8 @@ def main():
     args = parser.parse_args()
 
     consolidate_py_files(
-        input_dir=args.input_dir,
-        output_file=args.output,
+        input_dir       =args.input_dir,
+        output_file     =args.output,
         include_relative=not args.absolute,
     )
 

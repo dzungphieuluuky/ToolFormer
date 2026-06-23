@@ -44,7 +44,7 @@ import jsonlines
 
 class Result:
     def __init__(self):
-        self.errors: list[str] = []
+        self.errors: list[str]   = []
         self.warnings: list[str] = []
 
     def error(self, sample_id: str, msg: str) -> None:
@@ -104,7 +104,7 @@ def validate_value(
     value, param_name: str, param_info: dict, constraints: dict
 ) -> list[str]:
     errs: list[str] = []
-    expected_type = param_info.get("type", "string")
+    expected_type   = param_info.get("type", "string")
     if value is not None and not validate_type(value, expected_type):
         errs.append(
             f"param '{param_name}' expected type '{expected_type}', got {type(value).__name__}"
@@ -130,13 +130,13 @@ def validate_ground_truth(
     full_library: dict | None = None,
 ) -> None:
     sid = sample.get("id", "unknown")
-    gt = sample.get("ground_truth")
+    gt  = sample.get("ground_truth")
     if not isinstance(gt, dict):
         result.error(sid, "missing or non-dict 'ground_truth'")
         return
 
     workflow_type = sample.get("workflow_type")
-    gt_workflow = gt.get("workflow")
+    gt_workflow   = gt.get("workflow")
 
     if workflow_type != gt_workflow:
         result.error(
@@ -181,9 +181,9 @@ def validate_ground_truth(
         return
 
     func_schema = schema[func_name]
-    params = func_schema.get("parameters", {})
+    params      = func_schema.get("parameters", {})
     constraints = func_schema.get("constraints", {})
-    arguments = gt.get("arguments", {})
+    arguments   = gt.get("arguments", {})
     if not isinstance(arguments, dict):
         result.error(sid, "ground_truth['arguments'] is not a dict")
         return
@@ -235,7 +235,7 @@ def validate_ground_truth(
                             f"calls[{i}] function '{cfunc}' not in schema",
                         )
                 if cfunc and cfunc in schema and isinstance(cargs, dict):
-                    c_params = schema[cfunc].get("parameters", {})
+                    c_params      = schema[cfunc].get("parameters", {})
                     c_constraints = schema[cfunc].get("constraints", {})
                     for pname, pinfo in c_params.items():
                         if pinfo.get("required", False) and pname not in cargs:
@@ -375,7 +375,7 @@ def validate_cross_split(
 
     # Collect all functions referenced in calls across both splits
     all_train_funcs = set(train_primaries)
-    all_test_funcs = set(test_primaries)
+    all_test_funcs  = set(test_primaries)
     for s in train_samples:
         gt = s.get("ground_truth", {})
         if isinstance(gt, dict):
@@ -436,9 +436,9 @@ def main():
         if not args.dataset or not args.schema:
             print("Error: --dataset and --schema must be used together")
             sys.exit(1)
-        schema = load_schema(args.schema)
-        samples = load_jsonl(args.dataset)
-        result = Result()
+        schema             = load_schema(args.schema)
+        samples            = load_jsonl(args.dataset)
+        result             = Result()
         seen_ids: set[str] = set()
         print(f"\nLoaded {len(samples)} samples, {len(schema)} functions in schema")
         for s in samples:
@@ -449,10 +449,10 @@ def main():
 
     # ── Dual dataset mode ─────────────────────────────────────────────────
     if args.train and args.train_schema and args.test and args.test_schema:
-        train_schema = load_schema(args.train_schema)
-        test_schema = load_schema(args.test_schema)
+        train_schema  = load_schema(args.train_schema)
+        test_schema   = load_schema(args.test_schema)
         train_samples = load_jsonl(args.train)
-        test_samples = load_jsonl(args.test)
+        test_samples  = load_jsonl(args.test)
 
         print(f"Train dataset: {len(train_samples)} samples, {len(train_schema)} functions")
         print(f"Test dataset:  {len(test_samples)} samples, {len(test_schema)} functions")
@@ -464,8 +464,8 @@ def main():
         full_library = full_library or fl
 
         # Validate each split
-        train_result = Result()
-        test_result = Result()
+        train_result       = Result()
+        test_result        = Result()
         seen_ids: set[str] = set()
 
         for s in train_samples:

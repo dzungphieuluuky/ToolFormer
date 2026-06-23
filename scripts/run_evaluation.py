@@ -33,9 +33,9 @@ def main():
     parser.add_argument("--top-k", type=int, default=5)
     args = parser.parse_args()
 
-    cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+    cfg      = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     data_cfg = cfg["data"]
-    ret_cfg = cfg.get("retrieval", {})
+    ret_cfg  = cfg.get("retrieval", {})
 
     # ── Load function library ──────────────────────────────────────────────────
     with open(data_cfg["function_library_path"], encoding="utf-8") as fh:
@@ -52,7 +52,7 @@ def main():
         )
 
     # ── Build function retriever ───────────────────────────────────────────────
-    index_dir = data_cfg.get("retrieval_index_dir", "data/processed/retrieval_index")
+    index_dir     = data_cfg.get("retrieval_index_dir", "data/processed/retrieval_index")
     retriever_pkl = f"{index_dir}/retriever.pkl"
 
     if Path(retriever_pkl).exists():
@@ -60,7 +60,7 @@ def main():
     else:
         func_retriever = FunctionRetriever(
             function_library=function_library,
-            method=ret_cfg.get("method", "hybrid"),
+            method       =ret_cfg.get("method", "hybrid"),
             encoder_model=ret_cfg.get(
                 "encoder_model", "sentence-transformers/all-MiniLM-L6-v2"
             ),
@@ -76,12 +76,12 @@ def main():
         result = evaluate_model(
             model_path=model_path,
             test_dataset_path=data_cfg["test_path"],
-            function_library=function_library,
-            retriever=func_retriever,
-            sandbox=sandbox,
-            top_k=args.top_k,
-            model_name_tag=tag,
-            argument_values=argument_values,
+            function_library =function_library,
+            retriever        =func_retriever,
+            sandbox          =sandbox,
+            top_k            =args.top_k,
+            model_name_tag   =tag,
+            argument_values  =argument_values,
         )
         all_results.append(result)
 

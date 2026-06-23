@@ -31,7 +31,7 @@ def parse_parameter(line: str) -> Optional[Dict[str, Any]]:
         # Try alternative: [string][require] maybe without brackets
         # We'll assume default type string and required
         param_type = "string"
-        required = True
+        required   = True
     else:
         param_type = type_required_match.group(1)
         required = type_required_match.group(2) == "require"
@@ -40,7 +40,7 @@ def parse_parameter(line: str) -> Optional[Dict[str, Any]]:
     desc = re.sub(r"\[(\w+)\]\[(require|optional)\]", "", line).strip()
 
     # Extract enum if present (thuộc danh sách [...])
-    enum_match = re.search(r"thuộc danh sách \[(.*?)\]", desc)
+    enum_match  = re.search(r"thuộc danh sách \[(.*?)\]", desc)
     enum_values = None
     if enum_match:
         enum_str = enum_match.group(1)
@@ -49,7 +49,7 @@ def parse_parameter(line: str) -> Optional[Dict[str, Any]]:
 
     # Extract default if present (Default: value)
     default_match = re.search(r"Default:\s*([^,]+?)(?:,|$)", desc)
-    default_val = None
+    default_val   = None
     if default_match:
         default_val = default_match.group(1).strip()
         # Remove the Default part from description
@@ -69,7 +69,7 @@ def parse_parameter(line: str) -> Optional[Dict[str, Any]]:
 
 
 def parse_function(row: pd.Series) -> Dict[str, Any]:
-    func_name = row["Tên hàm"].strip()
+    func_name   = row["Tên hàm"].strip()
     description = row["Mô tả"].strip()
 
     params_text = row["Tham số"]
@@ -100,8 +100,8 @@ def parse_function(row: pd.Series) -> Dict[str, Any]:
     examples = [e.strip() for e in examples_text.split("\n") if e.strip()]
 
     # Domain and tags (customizable)
-    domain = {"category": "telecom_operations"}
-    tags = []
+    domain   = {"category": "telecom_operations"}
+    tags     = []
     keywords = [
         "KPI",
         "alarm",
@@ -130,7 +130,7 @@ def parse_function(row: pd.Series) -> Dict[str, Any]:
 
 
 def convert_csv_to_schema(csv_path: str, output_json: str):
-    df = pd.read_csv(csv_path, encoding="utf-8")
+    df     = pd.read_csv(csv_path, encoding="utf-8")
     schema = {}
     for _, row in df.iterrows():
         entry = parse_function(row)

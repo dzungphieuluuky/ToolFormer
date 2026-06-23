@@ -75,9 +75,9 @@ def format_rctp_sample(
     High-quality trajectories (non-abstention, has function + arguments)
     receive <|high_reward|>; everything else receives <|low_reward|>.
     """
-    query = sample["query"]
+    query     = sample["query"]
     retrieved = sample.get("retrieved_functions", [])
-    gt = sample.get("ground_truth", {})
+    gt        = sample.get("ground_truth", {})
 
     is_high = (
         gt.get("workflow") != "abstention"
@@ -102,7 +102,7 @@ def format_rctp_sample(
         if func_name is None
         else json.dumps(
             {"function": func_name, "arguments": arguments},
-            indent=2,
+            indent      =2,
             ensure_ascii=False,
         )
     )
@@ -124,7 +124,7 @@ def format_rctp_sample(
     return {
         "text": tokenizer.apply_chat_template(
             messages,
-            tokenize=False,
+            tokenize             =False,
             add_generation_prompt=False,
         )
     }
@@ -145,9 +145,9 @@ def main():
     )
     args = parser.parse_args()
 
-    cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+    cfg      = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     data_cfg = cfg["data"]
-    sft_cfg = cfg.get("sft", {})
+    sft_cfg  = cfg.get("sft", {})
 
     # ── 1. Load model (patch_tokenizer_for_custom_roles is called inside) ─────
     model, tokenizer = load_model(cfg)
@@ -173,14 +173,14 @@ def main():
         formatted = [
             format_rctp_sample(s, function_library, tokenizer) for s in raw_samples
         ]
-        dataset = Dataset.from_list(formatted)
+        dataset    = Dataset.from_list(formatted)
         output_dir = sft_cfg.get("rctp_output_dir", "outputs/rctp_sft_model")
         logger.info(f"[RCTP-FT] {len(formatted)} samples formatted with reward tokens.")
     else:
         dataset = load_sft_dataset(
             jsonl_path=data_cfg["train_path"],
             function_library=function_library,
-            tokenizer=tokenizer,
+            tokenizer       =tokenizer,
         )
         output_dir = sft_cfg.get("output_dir", "outputs/sft_model")
 
@@ -198,14 +198,14 @@ def main():
     # ── 6. Train ───────────────────────────────────────────────────────────────
     sft_args = SFTConfig(
         output_dir=output_dir,
-        num_train_epochs=sft_cfg.get("num_train_epochs", 1),
+        num_train_epochs           =sft_cfg.get("num_train_epochs", 1),
         per_device_train_batch_size=sft_cfg.get("per_device_train_batch_size", 2),
         gradient_accumulation_steps=sft_cfg.get("gradient_accumulation_steps", 4),
-        learning_rate=sft_cfg.get("learning_rate", 2e-4),
-        warmup_ratio=0.1,
-        logging_steps=10,
-        save_steps=200,
-        max_seq_length=(
+        learning_rate              =sft_cfg.get("learning_rate", 2e-4),
+        warmup_ratio               =0.1,
+        logging_steps              =10,
+        save_steps                 =200,
+        max_seq_length             =(
             data_cfg.get("max_prompt_length", 1024)
             + data_cfg.get("max_completion_length", 512)
         ),
@@ -215,9 +215,9 @@ def main():
 
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        tokenizer    =tokenizer,
         train_dataset=dataset,
-        args=sft_args,
+        args         =sft_args,
     )
 
     logger.info(f"[SFT] Starting {mode_label}...")

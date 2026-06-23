@@ -104,7 +104,7 @@ def main():
         # Build config
         base = OmegaConf.load(spec["base"])
         algo = OmegaConf.load(spec["algo"])
-        cfg = OmegaConf.to_container(OmegaConf.merge(base, algo), resolve=True)
+        cfg  = OmegaConf.to_container(OmegaConf.merge(base, algo), resolve=True)
 
         # Apply ablation patches
         for section, overrides in spec["patch"].items():
@@ -128,10 +128,10 @@ def main():
         result = evaluate_model(
             model_path=spec["output"],
             test_dataset_path=data_cfg["test_path"],
-            function_library=function_library,
-            retriever=retriever,
-            sandbox=sandbox,
-            model_name_tag=name,
+            function_library =function_library,
+            retriever        =retriever,
+            sandbox          =sandbox,
+            model_name_tag   =name,
         )
         results.append(result)
 

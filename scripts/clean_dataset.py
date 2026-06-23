@@ -2,14 +2,53 @@
 """
 clean_dataset.py
 ─────────────────
-Remove samples with hallucinated functions or invalid argument values from
-a JSONL dataset.  Uses the same validation logic as validate_dataset.py.
+Remove invalid data samples from a JSONL dataset so the output passes
+validate_dataset.py with zero errors AND zero warnings.
 
-Samples are removed when:
-  - primary function_name / ground_truth["function"] does not exist in schema
-  - a function referenced in ground_truth["calls"] does not exist in schema
-  - a required parameter is missing from ground_truth["arguments"]
-  - an argument value violates type, enum, min, or max constraints
+Samples are removed when ANY of the following is true:
+
+  Top-level integrity
+    - required field (id, query, workflow_type, function_name, ground_truth) missing
+    - query is empty or whitespace-only
+    - duplicate id
+    - split is not "train" or "test"
+
+  ground_truth integrity
+    - ground_truth is not a dict
+    - workflow_type mismatches ground_truth["workflow"]
+    - top-level function_name != ground_truth["function"] (non-abstention)
+
+  Function existence
+    - primary function or any call function not found in schema or library
+
+  Arguments
+    - arguments is not a dict
+    - missing required parameter
+    - value has wrong type
+    - value violates enum, min, or max constraints
+    - unknown parameter (not in schema) present
+
+  Abstention
+    - ground_truth["function"] is not None
+    - ground_truth["arguments"] is not a dict
+    - missing refusal_message or reasoning
+
+  Parallel / Sequential
+    - calls is missing, not a list, or empty
+    - any call is not a dict or missing function/arguments
+    - sequential call missing "step"
+
+  Single-call
+    - ground_truth has "calls" field
+
+  retrieved_functions
+    - not a list
+    - primary function missing from list (non-abstention)
+
+  retrieved_argument_values (if present)
+    - not a dict
+    - any value is not a list
+    - any score outside [0, 1]
 
 Usage:
     # Clean train_dataset only
@@ -36,10 +75,18 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
-import jsonlines
+
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
+
+REQUIRED_TOP_FIELDS = ("id", "query", "workflow_type", "function_name", "ground_truth")
+VALID_SPLITS = ("train", "test")
+VALID_WORKFLOWS = ("single_call", "parallel", "sequential", "abstention")
 
 
 def load_schema(path: str) -> dict:
@@ -49,31 +96,35 @@ def load_schema(path: str) -> dict:
 
 def load_jsonl(path: str) -> list[dict]:
     samples: list[dict] = []
-    with jsonlines.open(path) as reader:
-        for obj in reader:
-            samples.append(obj)
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                samples.append(json.loads(line))
     return samples
 
 
 def write_jsonl(samples: list[dict], path: str) -> None:
-    with jsonlines.open(path, mode="w") as writer:
+    with open(path, "w", encoding="utf-8") as f:
         for s in samples:
-            writer.write(s)
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
 
 
 def _validate_type(value, expected_type: str) -> bool:
-    if expected_type == "string":
+    if expected_type in ("string",):
         return isinstance(value, str)
-    elif expected_type == "number":
+    elif expected_type in ("number",):
         return isinstance(value, (int, float))
-    elif expected_type == "integer":
+    elif expected_type in ("integer", "int"):
         return isinstance(value, int) and not isinstance(value, bool)
-    elif expected_type == "boolean":
+    elif expected_type in ("boolean", "bool"):
         return isinstance(value, bool)
     return True
 
 
-def _check_args(arguments: dict, func_name: str, schema: dict) -> str | None:
+def _check_args(
+    arguments: dict, func_name: str, schema: dict
+) -> str | None:
     params = schema.get("parameters", {})
     constraints = schema.get("constraints", {})
 
@@ -104,21 +155,75 @@ def _check_args(arguments: dict, func_name: str, schema: dict) -> str | None:
                 f"{con['enum']} for '{func_name}'"
             )
 
+    for pname in arguments:
+        if pname not in params:
+            return f"unknown param '{pname}' for '{func_name}'"
+
     return None
 
 
 def is_sample_valid(
-    sample: dict, schema: dict, full_library: dict | None = None
+    sample: dict, schema: dict, full_library: dict | None = None,
+    seen_ids: set | None = None,
 ) -> tuple[bool, str]:
+    if seen_ids is None:
+        seen_ids = set()
     sid = sample.get("id", "unknown")
-    gt = sample.get("ground_truth")
 
+    # ── Required top-level fields ──────────────────────────────────────────
+    for field in REQUIRED_TOP_FIELDS:
+        if field not in sample:
+            return False, f"sample {sid}: missing top-level field '{field}'"
+
+    # ── ID uniqueness ──────────────────────────────────────────────────────
+    if sid in seen_ids:
+        return False, f"sample {sid}: duplicate id"
+    seen_ids.add(sid)
+
+    # ── UUID format ────────────────────────────────────────────────────────
+    if sid and not UUID_RE.match(sid):
+        return False, f"sample {sid}: id is not a valid UUID"
+
+    # ── Query ──────────────────────────────────────────────────────────────
+    query = sample.get("query", "")
+    if not query or not isinstance(query, str) or not query.strip():
+        return False, f"sample {sid}: query is missing or empty"
+    if not query.strip():
+        return False, f"sample {sid}: query is whitespace-only"
+
+    # ── Split ──────────────────────────────────────────────────────────────
+    split = sample.get("split")
+    if split is not None and split not in VALID_SPLITS:
+        return False, f"sample {sid}: unexpected split value '{split}'"
+
+    # ── Workflow type ──────────────────────────────────────────────────────
+    workflow_type = sample.get("workflow_type")
+    if workflow_type not in VALID_WORKFLOWS:
+        return False, f"sample {sid}: unknown workflow_type '{workflow_type}'"
+
+    # ── retrieved_functions ────────────────────────────────────────────────
+    retrieved = sample.get("retrieved_functions", [])
+    if not isinstance(retrieved, list):
+        return False, f"sample {sid}: 'retrieved_functions' is not a list"
+
+    primary_func = sample.get("function_name")
+    if (
+        primary_func
+        and workflow_type != "abstention"
+        and primary_func not in retrieved
+    ):
+        return (
+            False,
+            f"sample {sid}: primary function '{primary_func}' not in "
+            f"retrieved_functions {retrieved}",
+        )
+
+    # ── ground_truth ───────────────────────────────────────────────────────
+    gt = sample.get("ground_truth")
     if not isinstance(gt, dict):
         return False, f"sample {sid}: missing or non-dict ground_truth"
 
-    workflow_type = sample.get("workflow_type")
-
-    # ── Workflow mismatch ────────────────────────────────────────────────
+    # Workflow mismatch
     if workflow_type != gt.get("workflow"):
         return (
             False,
@@ -126,9 +231,20 @@ def is_sample_valid(
             f"ground_truth['workflow'] '{gt.get('workflow')}'",
         )
 
-    # ── Abstention ───────────────────────────────────────────────────────
+    # ── Function name match ────────────────────────────────────────────────
+    top_func_name = sample.get("function_name")
+    gt_func = gt.get("function")
+    if workflow_type != "abstention":
+        if top_func_name and gt_func and top_func_name != gt_func:
+            return (
+                False,
+                f"sample {sid}: top-level 'function_name'='{top_func_name}' != "
+                f"ground_truth['function']='{gt_func}'",
+            )
+
+    # ── Abstention ─────────────────────────────────────────────────────────
     if workflow_type == "abstention":
-        if gt.get("function") is not None:
+        if gt_func is not None:
             return (
                 False,
                 f"sample {sid}: abstention but ground_truth['function'] is not None",
@@ -138,9 +254,19 @@ def is_sample_valid(
                 False,
                 f"sample {sid}: abstention ground_truth['arguments'] is not a dict",
             )
+        if not gt.get("refusal_message"):
+            return (
+                False,
+                f"sample {sid}: abstention missing 'refusal_message'",
+            )
+        if not gt.get("reasoning"):
+            return (
+                False,
+                f"sample {sid}: abstention missing 'reasoning'",
+            )
         return True, ""
 
-    # ── Non-abstention: check primary function ───────────────────────────
+    # ── Non-abstention: check primary function ─────────────────────────────
     func_name = gt.get("function")
     if not func_name or not isinstance(func_name, str):
         return (
@@ -158,7 +284,7 @@ def is_sample_valid(
                 f"sample {sid}: function '{func_name}' not found in schema or library",
             )
 
-    # ── Check primary function arguments ─────────────────────────────────
+    # ── Check primary function arguments ───────────────────────────────────
     arguments = gt.get("arguments", {})
     if not isinstance(arguments, dict):
         return (
@@ -170,7 +296,15 @@ def is_sample_valid(
     if err is not None:
         return False, f"sample {sid}: {err}"
 
-    # ── Parallel / sequential: check calls ──────────────────────────────
+    # ── Single_call: must NOT have "calls" ─────────────────────────────────
+    if workflow_type == "single_call":
+        if "calls" in gt:
+            return (
+                False,
+                f"sample {sid}: single_call ground_truth should not have 'calls'",
+            )
+
+    # ── Parallel / sequential: check calls ─────────────────────────────────
     if workflow_type in ("parallel", "sequential"):
         calls = gt.get("calls")
         if not isinstance(calls, list) or len(calls) == 0:
@@ -209,12 +343,46 @@ def is_sample_valid(
             if err is not None:
                 return False, f"sample {sid}: calls[{i}] {err}"
 
+            # Sequential must have "step"
+            if workflow_type == "sequential" and "step" not in call:
+                return (
+                    False,
+                    f"sample {sid}: calls[{i}] missing 'step' for sequential",
+                )
+
+    # ── retrieved_argument_values structure (if present) ───────────────────
+    arg_vals = sample.get("retrieved_argument_values")
+    if arg_vals is not None:
+        if not isinstance(arg_vals, dict):
+            return (
+                False,
+                f"sample {sid}: 'retrieved_argument_values' is not a dict",
+            )
+        for param, matches in arg_vals.items():
+            if not isinstance(matches, list):
+                return (
+                    False,
+                    f"sample {sid}: retrieved_argument_values['{param}'] "
+                    f"is not a list",
+                )
+            for mi, m in enumerate(matches):
+                if isinstance(m, dict):
+                    score = m.get("score")
+                    if score is not None and isinstance(score, (int, float)):
+                        if score < 0 or score > 1:
+                            return (
+                                False,
+                                f"sample {sid}: "
+                                f"retrieved_argument_values['{param}'][{mi}] "
+                                f"score={score} outside [0, 1]",
+                            )
+
     return True, ""
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Remove samples with hallucinated functions or invalid args"
+        description="Remove invalid samples from JSONL dataset"
     )
     parser.add_argument("--dataset", help="Path to single JSONL dataset")
     parser.add_argument("--schema", help="Path to function schema for --dataset")
@@ -247,17 +415,18 @@ def main():
     ) -> int:
         valid: list[dict] = []
         removed: list[tuple[str, str]] = []
+        seen_ids: set[str] = set()
 
         for s in samples:
-            ok, reason = is_sample_valid(s, schema, full_library)
+            ok, reason = is_sample_valid(s, schema, full_library, seen_ids)
             if ok:
                 valid.append(s)
             else:
                 removed.append((s.get("id", "unknown"), reason))
 
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"  {label}")
-        print(f"{'='*70}")
+        print(f"{'=' * 70}")
         print(f"  Total  : {len(samples)}")
         print(f"  Kept   : {len(valid)}")
         print(f"  Removed: {len(removed)}")
@@ -268,20 +437,18 @@ def main():
 
         if not args.dry_run and out_path:
             write_jsonl(valid, out_path)
-            print(f"\n  → Wrote {len(valid)} samples to {out_path}")
+            print(f"\n  -> Wrote {len(valid)} samples to {out_path}")
 
         return len(removed)
 
     total_removed = 0
 
-    # Single dataset mode
     if args.dataset and args.schema:
         schema = load_schema(args.schema)
         samples = load_jsonl(args.dataset)
         total_removed += _process(
             samples, schema, f"Cleaning: {args.dataset}", args.output
         )
-    # Dual dataset mode
     elif args.train and args.train_schema and args.test and args.test_schema:
         train_schema = load_schema(args.train_schema)
         test_schema = load_schema(args.test_schema)
@@ -318,7 +485,7 @@ def main():
         sys.exit(1)
 
     if total_removed == 0:
-        print("\n✓  No invalid samples found — dataset is clean.")
+        print("\n✓  No invalid samples found - dataset is clean.")
     else:
         print(f"\n  Total removed across all datasets: {total_removed}")
 

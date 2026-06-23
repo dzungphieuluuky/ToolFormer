@@ -69,14 +69,14 @@ class MockTokenizer:
     def apply_chat_template(
         self,
         messages: list[dict],
-        tokenize: bool = False,
+        tokenize: bool              = False,
         add_generation_prompt: bool = False,
         **kwargs,
     ) -> str:
         """Render messages using the custom ChatML template."""
         parts: list[str] = []
         for msg in messages:
-            role = msg["role"]
+            role    = msg["role"]
             content = msg["content"]
             parts.append(f"<|im_start|>{role}\n{content}\n<|im_end|>")
         result = "\n".join(parts)
@@ -98,7 +98,7 @@ def main():
     parser.add_argument("--n", type=int, default=1, help="Number of samples to print")
     args = parser.parse_args()
 
-    cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
+    cfg      = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     data_cfg = cfg["data"]
 
     # Load function library
@@ -121,9 +121,9 @@ def main():
     tokenizer = MockTokenizer()
 
     for i, sample in enumerate(raw_samples):
-        arg_vals = _deserialise_arg_values(sample.get("retrieved_argument_values"))
+        arg_vals  = _deserialise_arg_values(sample.get("retrieved_argument_values"))
         retrieved = sample.get("retrieved_functions", [])
-        gt = sample.get("ground_truth", {})
+        gt        = sample.get("ground_truth", {})
 
         print(f"\n{SEP}")
         print(
@@ -157,7 +157,7 @@ def main():
         print("\n── EXPECTED MODEL OUTPUT FORMAT ─────────────────────────────\n")
         call_json = json.dumps(
             {"function": gt.get("function"), "arguments": gt.get("arguments", {})},
-            indent=2,
+            indent      =2,
             ensure_ascii=False,
         )
         print(
@@ -190,7 +190,7 @@ def main():
 
     wf_counts: dict[str, int] = {}
     fn_counts: dict[str, int] = {}
-    enriched_n = 0
+    enriched_n                = 0
 
     for s in all_samples:
         wt = s.get("workflow_type", "unknown")
