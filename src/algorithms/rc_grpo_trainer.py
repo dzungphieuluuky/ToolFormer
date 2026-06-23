@@ -105,6 +105,52 @@ def _make_failure_response(gold_function: str, gold_arguments: dict, function_li
     return f"<reasoning>\n{reasoning}\n</reasoning>\n<tool_call>\n{call_json}\n</tool_call>"
 
 
+def _make_multi_call_failure_response(gold_calls: list[dict], function_library: dict) -> str:
+    """
+    Synthesize a FAILURE trajectory for multi-call samples (sequential/parallel).
+
+    Randomly chooses one of:
+      - skip one call entirely (missing step)
+      - corrupt one call (wrong function / missing arg / wrong value)
+    """
+    import json as _json
+    reasoning = "Analyzing the query and selecting the matching function and arguments."
+    failure_kind = random.choice(["skip_call", "corrupt_one"])
+
+    if failure_kind == "skip_call" and len(gold_calls) > 1:
+        drop_idx = random.randint(0, len(gold_calls) - 1)
+        corrupted_calls = [c for i, c in enumerate(gold_calls) if i != drop_idx]
+    else:
+        corrupted_calls = []
+        for c in gold_calls:
+            cf = c["function"]
+            ca = c.get("arguments", {})
+            fk = random.choice(["wrong_function", "missing_arg", "wrong_arg_value"])
+            if fk == "wrong_function" and len(function_library) > 1:
+                candidates = [f for f in function_library if f != cf]
+                wrong_func = random.choice(candidates) if candidates else cf
+                corrupted_calls.append({"function": wrong_func, "arguments": ca})
+            elif fk == "missing_arg" and ca:
+                corrupted = dict(ca)
+                drop_key = random.choice(list(corrupted.keys()))
+                corrupted.pop(drop_key)
+                corrupted_calls.append({"function": cf, "arguments": corrupted})
+            elif fk == "wrong_arg_value" and ca:
+                corrupted = dict(ca)
+                change_key = random.choice(list(corrupted.keys()))
+                corrupted[change_key] = f"__WRONG__{corrupted[change_key]}"
+                corrupted_calls.append({"function": cf, "arguments": corrupted})
+            else:
+                corrupted_calls.append({"function": cf, "arguments": {}})
+
+    call_blocks = []
+    for call in corrupted_calls:
+        call_json = _json.dumps(call, indent=2, ensure_ascii=False)
+        call_blocks.append(f"<tool_call>\n{call_json}\n</tool_call>")
+    calls_str = "\n".join(call_blocks)
+    return f"<reasoning>\n{reasoning}\n</reasoning>\n{calls_str}"
+
+
 def build_rctp_dataset_from_jsonl(
     jsonl_path: str,
     function_library: dict,
@@ -137,9 +183,10 @@ def build_rctp_dataset_from_jsonl(
         gt = sample.get("ground_truth", {})
         if not isinstance(gt, dict):
             continue
-        gold_function = gt.get("function")
-        gold_arguments = gt.get("arguments", {})
-        if gold_function is None:
+        gold_calls = gt.get("calls", [])
+
+        # Skip abstention — no tool_call to learn
+        if not gold_calls:
             continue
 
         if telco_retriever is not None:
@@ -156,15 +203,28 @@ def build_rctp_dataset_from_jsonl(
             "reasoning",
             "Analysing the query to determine the correct function and arguments.",
         )
-        gold_call_json = _json.dumps(
-            {"function": gold_function, "arguments": gold_arguments},
-            indent=2, ensure_ascii=False,
-        )
-        expert_response = f"<reasoning>\n{reasoning}\n</reasoning>\n<tool_call>\n{gold_call_json}\n</tool_call>"
+
+        # Build expert (success) trajectory — handles single and multi-call uniformly
+        call_blocks = []
+        for c in gold_calls:
+            c_json = _json.dumps(
+                {"function": c["function"], "arguments": c.get("arguments", {})},
+                indent=2, ensure_ascii=False,
+            )
+            call_blocks.append(f"<tool_call>\n{c_json}\n</tool_call>")
+        calls_str = "\n".join(call_blocks)
+        expert_response = f"<reasoning>\n{reasoning}\n</reasoning>\n{calls_str}"
         trajectories.append(Trajectory(prompt_messages=prompt_messages, response_text=expert_response, reward=1))
 
+        # Build failure trajectories
+        is_multi = len(gold_calls) > 1
         for _ in range(failures_per_expert):
-            failure_response = _make_failure_response(gold_function, gold_arguments, function_library)
+            if is_multi:
+                failure_response = _make_multi_call_failure_response(gold_calls, function_library)
+            else:
+                failure_response = _make_failure_response(
+                    gold_calls[0]["function"], gold_calls[0].get("arguments", {}), function_library
+                )
             trajectories.append(Trajectory(prompt_messages=prompt_messages, response_text=failure_response, reward=0))
 
     n_success = sum(1 for t in trajectories if t.reward == 1)
@@ -713,15 +773,19 @@ class RCGRPOTrainer(_GRPOTrainer):
 def rc_grpo_reward_func_trl(completions: list[str], ground_truth: list[dict], **kwargs) -> list[float]:
     rewards = []
     for completion, gt in zip(completions, ground_truth):
-        if not isinstance(gt, dict) or gt.get("function") is None:
+        if not isinstance(gt, dict):
             rewards.append(0.0)
             continue
-        gold_calls = [{"function": gt.get("function"), "arguments": gt.get("arguments", {})}]
-        call = extract_call(completion)
-        agent_calls = [call] if call else []
+        gold_calls = [
+            {"function": c["function"], "arguments": c.get("arguments", {})}
+            for c in gt.get("calls", [])
+        ]
+        if not gold_calls:
+            rewards.append(0.0)
+            continue
+        agent_calls = extract_all_calls(completion)
         r_action = compute_action_coverage_reward(agent_calls, gold_calls)
-        r_state = r_action
-        rewards.append(float(r_state * r_action))
+        rewards.append(float(r_action * r_action))
     return rewards
 
 

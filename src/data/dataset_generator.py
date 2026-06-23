@@ -828,14 +828,14 @@ class TelcoDatasetGenerator:
         call = raw.get("function_call")
         if not query or not call:
             return None
+        calls = [{"function": call.get("function", func_name), "arguments": call.get("arguments", {})}]
         return DataSample(
             id=str(uuid.uuid4()),
             query=query,
             workflow_type="single_call",
             function_name=func_name,
             ground_truth={
-                "function": call.get("function", func_name),
-                "arguments": call.get("arguments", {}),
+                "calls": calls,
                 "workflow": "single_call",
                 "reasoning": raw.get("reasoning", ""),
             },
@@ -847,20 +847,22 @@ class TelcoDatasetGenerator:
         self, raw: dict, func_names: list[str], split: str = "train"
     ) -> DataSample | None:
         query = raw.get("query", "").strip()
-        calls = raw.get("function_calls", [])
-        if not query or not calls:
+        raw_calls = raw.get("function_calls", [])
+        if not query or not raw_calls:
             return None
-        primary = calls[0].get("function", func_names[0]) if calls else func_names[0]
+        primary = raw_calls[0].get("function", func_names[0]) if raw_calls else func_names[0]
+        calls = [
+            {"function": c.get("function", primary), "arguments": c.get("arguments", {})}
+            for c in raw_calls
+        ]
         return DataSample(
             id=str(uuid.uuid4()),
             query=query,
             workflow_type="parallel",
             function_name=primary,
             ground_truth={
-                "function": primary,
-                "arguments": calls[0].get("arguments", {}) if calls else {},
-                "workflow": "parallel",
                 "calls": calls,
+                "workflow": "parallel",
                 "reasoning": raw.get("reasoning", ""),
             },
             retrieved_functions=[],
@@ -871,20 +873,22 @@ class TelcoDatasetGenerator:
         self, raw: dict, func_names: list[str], split: str = "train"
     ) -> DataSample | None:
         query = raw.get("query", "").strip()
-        calls = raw.get("function_calls", [])
-        if not query or not calls:
+        raw_calls = raw.get("function_calls", [])
+        if not query or not raw_calls:
             return None
-        first_call = calls[0] if calls else {}
+        first_call = raw_calls[0] if raw_calls else {}
+        calls = [
+            {"function": c.get("function", func_names[0]), "arguments": c.get("arguments", {})}
+            for c in raw_calls
+        ]
         return DataSample(
             id=str(uuid.uuid4()),
             query=query,
             workflow_type="sequential",
             function_name=first_call.get("function", func_names[0]),
             ground_truth={
-                "function": first_call.get("function", func_names[0]),
-                "arguments": first_call.get("arguments", {}),
-                "workflow": "sequential",
                 "calls": calls,
+                "workflow": "sequential",
                 "reasoning": raw.get("reasoning", ""),
             },
             retrieved_functions=[],
@@ -903,8 +907,7 @@ class TelcoDatasetGenerator:
             workflow_type="abstention",
             function_name="none",
             ground_truth={
-                "function": None,
-                "arguments": {},
+                "calls": [],
                 "workflow": "abstention",
                 "refusal_message": raw.get("refusal_message", ""),
                 "reasoning": raw.get("reasoning", ""),

@@ -223,26 +223,19 @@ def build_messages_for_sft(
         "Analysing the query to determine the correct function and arguments.",
     )
 
-    workflow = ground_truth.get("workflow", "single_call")
+    calls = ground_truth.get("calls", [])
 
-    if workflow == "sequential" and "calls" in ground_truth:
+    if not calls:
+        calls_str = "<tool_call>\nnull\n</tool_call>"
+    else:
         call_blocks = []
-        for call in ground_truth["calls"]:
+        for call in calls:
             call_json = json.dumps(
-                {"function": call["function"], "arguments": call["arguments"]},
+                {"function": call["function"], "arguments": call.get("arguments", {})},
                 indent=2, ensure_ascii=False,
             )
             call_blocks.append(f"<tool_call>\n{call_json}\n</tool_call>")
         calls_str = "\n".join(call_blocks)
-    else:
-        func_name = ground_truth.get("function")
-        arguments = ground_truth.get("arguments", {})
-        call_json = (
-            "null" if func_name is None
-            else json.dumps({"function": func_name, "arguments": arguments},
-                            indent=2, ensure_ascii=False)
-        )
-        calls_str = f"<tool_call>\n{call_json}\n</tool_call>"
 
     assistant_content = f"<reasoning>\n{reasoning}\n</reasoning>\n{calls_str}"
     messages.append({"role": "assistant", "content": assistant_content})
@@ -264,9 +257,12 @@ def format_sample_for_grpo(
     arg_vals = argument_values or sample.get("retrieved_argument_values")
     messages = build_messages_for_grpo(query, retrieved, function_library, arg_vals, include_all_threshold)
     prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    # FIXED: serialise ground_truth to JSON string to avoid pyarrow struct-
+    # schema inference on heterogeneous argument value types (ArrowInvalid).
+    # Reward functions must json.loads() this back out (they do, via _parse_gt).
     return {
         "prompt": prompt,
-        "ground_truth": gt,
+        "ground_truth": json.dumps(gt, ensure_ascii=False),
         "query": query,
         "workflow_type": sample.get("workflow_type", "single_call"),
     }
@@ -426,21 +422,27 @@ def load_grpo_dataset(
     print(f"[base_trainer] GRPO dataset ready: {len(dataset)} samples")
     print(f"[base_trainer] Columns: {dataset.column_names}")
 
+    # FIXED: ground_truth is now a JSON string (see format_sample_for_grpo).
+    # Parse it back for display in the sanity check.
     if len(dataset) > 0:
         s = dataset[0]
-        gt = s.get("ground_truth", {})
+        gt_raw = s.get("ground_truth", "{}")
+        try:
+            gt = json.loads(gt_raw) if isinstance(gt_raw, str) else gt_raw
+        except json.JSONDecodeError:
+            gt = {}
         wt = s.get("workflow_type", "single_call")
         print(f"\n{'=' * 70}")
         print("SAMPLE PROMPT (first 1500 chars):")
         print("=" * 70)
         print(s["prompt"][:1500])
         print("..." if len(s["prompt"]) > 1500 else "")
+        calls = gt.get("calls", [])
         print(f"\nGROUND TRUTH (reward funcs see this, MODEL DOES NOT):")
         print(f"  workflow:  {wt}")
-        print(f"  function:  {gt.get('function')}")
-        print(f"  arguments: {json.dumps(gt.get('arguments', {}), ensure_ascii=False)[:300]}")
-        if "calls" in gt:
-            print(f"  calls:     {len(gt['calls'])} steps")
+        print(f"  calls:     {len(calls)} steps")
+        if calls:
+            print(f"  first:     {json.dumps(calls[0], ensure_ascii=False)[:300]}")
         print("=" * 70 + "\n")
 
     return dataset

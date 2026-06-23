@@ -2,6 +2,28 @@ import re
 import json
 from typing import Any
 
+# ─────────────────────────────────────────────────────────────────────
+# _parse_gt: safely coerce a ground_truth column value (JSON string
+# OR already-a-dict, for backward compatibility) into a dict.
+#
+# BUG FIXED: format_sample_for_grpo now serialises ground_truth to a
+# JSON string to avoid pyarrow struct-schema inference on heterogeneous
+# argument value types (ArrowInvalid). Every consumer that receives
+# ground_truth from the HF Dataset must route it through this helper.
+# ─────────────────────────────────────────────────────────────────────
+
+def _parse_gt(gt) -> dict:
+    """Coerce ground_truth (JSON string or dict) into a dict."""
+    if isinstance(gt, dict):
+        return gt
+    if isinstance(gt, str):
+        try:
+            parsed = json.loads(gt)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
 _TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
 _REASONING_RE = re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL)
 
@@ -145,20 +167,10 @@ def make_reward_function(
         "execution": 0.10,
     }
 
-    workflow = ground_truth.get("workflow", "single_call")
-
-    if workflow == "sequential" and "calls" in ground_truth:
-        gold_calls = [
-            {"function": c["function"], "arguments": c["arguments"]}
-            for c in ground_truth["calls"]
-        ]
-    else:
-        gold_calls = [
-            {
-                "function": ground_truth.get("function"),
-                "arguments": ground_truth.get("arguments", {}),
-            }
-        ]
+    gold_calls = [
+        {"function": c["function"], "arguments": c["arguments"]}
+        for c in ground_truth.get("calls", [])
+    ]
 
     def _reward(response_text: str) -> float:
         score = 0.0
@@ -172,11 +184,7 @@ def make_reward_function(
             fmt += 0.5
         score += w["format"] * fmt
 
-        if workflow == "sequential" and "calls" in ground_truth:
-            agent_calls = extract_all_calls(response_text)
-        else:
-            single = extract_call(response_text)
-            agent_calls = [single] if single else []
+        agent_calls = extract_all_calls(response_text)
 
         if not agent_calls:
             return score
@@ -212,27 +220,13 @@ def make_reward_function(
 
 
 def make_binary_reward_function(ground_truth: dict, function_library: dict):
-    workflow = ground_truth.get("workflow", "single_call")
-
-    if workflow == "sequential" and "calls" in ground_truth:
-        gold_calls = [
-            {"function": c["function"], "arguments": c["arguments"]}
-            for c in ground_truth["calls"]
-        ]
-    else:
-        gold_calls = [
-            {
-                "function": ground_truth.get("function"),
-                "arguments": ground_truth.get("arguments", {}),
-            }
-        ]
+    gold_calls = [
+        {"function": c["function"], "arguments": c["arguments"]}
+        for c in ground_truth.get("calls", [])
+    ]
 
     def _reward(response_text: str) -> int:
-        if workflow == "sequential" and "calls" in ground_truth:
-            agent_calls = extract_all_calls(response_text)
-        else:
-            single = extract_call(response_text)
-            agent_calls = [single] if single else []
+        agent_calls = extract_all_calls(response_text)
         if not agent_calls:
             return 0
         return compute_action_coverage_reward(agent_calls, gold_calls)
@@ -254,30 +248,39 @@ def format_reward(completions: list[str], **kwargs) -> list[float]:
     return rewards
 
 
-def function_reward(completions: list[str], ground_truth: list[dict], **kwargs) -> list[float]:
+def function_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
     rewards = []
-    for c, gt in zip(completions, ground_truth):
-        expected = gt.get("function", "")
+    for c, gt_raw in zip(completions, ground_truth):
+        gt = _parse_gt(gt_raw)
+        calls = gt.get("calls", [])
+        expected = calls[0]["function"] if calls else ""
         rewards.append(func_selection_ok(c, expected))
     return rewards
 
 
-def argument_reward(completions: list[str], ground_truth: list[dict], **kwargs) -> list[float]:
+def argument_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
     rewards = []
-    for c, gt in zip(completions, ground_truth):
-        expected_args = gt.get("arguments", {})
+    for c, gt_raw in zip(completions, ground_truth):
+        gt = _parse_gt(gt_raw)
+        calls = gt.get("calls", [])
+        expected_args = calls[0].get("arguments", {}) if calls else {}
         rewards.append(args_accuracy(c, expected_args))
     return rewards
 
 
-def composite_reward(completions: list[str], ground_truth: list[dict], **kwargs) -> list[float]:
+def composite_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
     rewards = []
-    for c, gt in zip(completions, ground_truth):
+    for c, gt_raw in zip(completions, ground_truth):
+        gt = _parse_gt(gt_raw)
+        calls = gt.get("calls", [])
+        first_call = calls[0] if calls else {}
+        expected_func = first_call.get("function", "")
+        expected_args = first_call.get("arguments", {})
         r = (
             0.10 * (1.0 if bool(_TOOL_CALL_RE.search(c)) and bool(_REASONING_RE.search(c)) else
                     0.5 if bool(_TOOL_CALL_RE.search(c)) else 0.0)
-            + 0.30 * func_selection_ok(c, gt.get("function", ""))
-            + 0.40 * args_accuracy(c, gt.get("arguments", {}))
+            + 0.30 * func_selection_ok(c, expected_func)
+            + 0.40 * args_accuracy(c, expected_args)
             + 0.20 * reasoning_quality(c)
         )
         rewards.append(r)

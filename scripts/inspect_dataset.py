@@ -15,16 +15,17 @@ Generates both CLI output and a markdown report file covering:
   - Clean vs original comparison
   - Retrieved functions & argument values
   - Cross-split analysis
+  - Per-function detailed analysis (with library metadata)
 
 Usage:
-    python scripts/inspect_dataset.py \\
-        --train data/processed/train_dataset_uncleaned.jsonl \\
-        --test data/processed/test_dataset_uncleaned.jsonl \\
-        --train-schema data/processed/function_schema_train.json \\
-        --test-schema data/processed/function_schema_test.json \\
-        --library data/processed/function_library.json \\
-        [--train-clean data/processed/train_dataset_clean.jsonl] \\
-        [--test-clean data/processed/test_dataset_clean.jsonl] \\
+    python scripts/inspect_dataset.py \
+        --train data/processed/train_dataset_uncleaned.jsonl \
+        --test data/processed/test_dataset_uncleaned.jsonl \
+        --train-schema data/processed/function_schema_train.json \
+        --test-schema data/processed/function_schema_test.json \
+        --library data/processed/function_library.json \
+        [--train-clean data/processed/train_dataset_clean.jsonl] \
+        [--test-clean data/processed/test_dataset_clean.jsonl] \
         [--report reports/dataset_report.md]
 """
 
@@ -43,6 +44,25 @@ from typing import Any
 UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
 )
+
+ANSI_RESET = "\033[0m"
+ANSI_BOLD = "\033[1m"
+ANSI_DIM = "\033[2m"
+ANSI_RED = "\033[91m"
+ANSI_GREEN = "\033[92m"
+ANSI_YELLOW = "\033[93m"
+ANSI_BLUE = "\033[94m"
+ANSI_CYAN = "\033[96m"
+
+
+def no_color(text: str) -> str:
+    return text
+
+
+def colorize(use_color: bool):
+    if use_color:
+        return lambda text: text
+    return no_color
 
 
 def load_jsonl(path: str) -> list[dict]:
@@ -100,6 +120,17 @@ def table(headers: list[str], rows: list[list[Any]]) -> str:
         for row in rows
     )
     return f"{hdr}\n{sep}\n{body}\n"
+
+
+def ascii_bar(pct: float, width: int = 20) -> str:
+    """Render a simple ASCII horizontal bar."""
+    filled = int(round(pct / 100.0 * width))
+    empty = width - filled
+    return "[" + "#" * filled + "." * empty + "]"
+
+
+def dotted_line(char: str = "─", width: int = 70) -> str:
+    return char * width
 
 
 # ── Analyzer ───────────────────────────────────────────────────────────────
@@ -279,6 +310,37 @@ class DatasetAnalyzer:
             "present": present_count,
             "params": dict(param_counts.most_common(20)),
         }
+
+    # ── Per-function analysis ──────────────────────────────────────────────
+
+    def collect_all_referenced_functions(self) -> Counter:
+        """Count SAMPLES (unique per sample) where each function is referenced.
+
+        For each sample, collects a set of function names from:
+          - function_name (primary field)
+          - ground_truth.function (single_call target)
+          - ground_truth.calls[].function (sequential/parallel targets)
+        Then increments the counter ONCE per unique function per sample.
+        """
+        c = Counter()
+        for s in self.samples:
+            seen: set[str] = set()
+            fn = s.get("function_name", "none")
+            if fn and fn != "none":
+                seen.add(fn)
+            gt = s.get("ground_truth", {})
+            if isinstance(gt, dict):
+                gf = gt.get("function")
+                if gf and gf != "none":
+                    seen.add(gf)
+                calls = gt.get("calls", [])
+                if isinstance(calls, list):
+                    for call in calls:
+                        if isinstance(call, dict) and call.get("function"):
+                            seen.add(call["function"])
+            for f in seen:
+                c[f] += 1
+        return c
 
 
 # ── Report Builder ─────────────────────────────────────────────────────────
@@ -682,6 +744,55 @@ def clean_comparison(
 # ── CLI Summary ─────────────────────────────────────────────────────────────
 
 
+def _section_header(text: str, width: int = 70) -> None:
+    print(f"\n  {ANSI_BOLD}{text}{ANSI_RESET}")
+    print(f"  {dotted_line('─', width)}")
+
+
+def _warn(text: str) -> None:
+    print(f"  {ANSI_YELLOW}⚠ {text}{ANSI_RESET}")
+
+
+def _ok(text: str) -> None:
+    print(f"  {ANSI_GREEN}✓ {text}{ANSI_RESET}")
+
+
+def _err(text: str) -> None:
+    print(f"  {ANSI_RED}✗ {text}{ANSI_RESET}")
+
+
+def _info(text: str) -> None:
+    print(f"  {ANSI_CYAN}{text}{ANSI_RESET}")
+
+
+def _bold(text: str) -> str:
+    return f"{ANSI_BOLD}{text}{ANSI_RESET}"
+
+
+def _dim(text: str) -> str:
+    return f"{ANSI_DIM}{text}{ANSI_RESET}"
+
+
+def print_cli_table(headers: list[str], rows: list[list[Any]]) -> None:
+    """Print a formatted ASCII table to CLI."""
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, cell in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(cell)))
+    # Cap column widths
+    col_widths = [min(w, 50) for w in col_widths]
+    sep = "  " + "─" * (sum(col_widths) + 3 * (len(col_widths) - 1))
+    hdr = "  " + " │ ".join(h.ljust(w)[:w] for h, w in zip(headers, col_widths))
+    print(sep)
+    print(hdr)
+    print(sep)
+    for row in rows:
+        line = "  " + " │ ".join(
+            str(c).ljust(w)[:w] for c, w in zip(row, col_widths)
+        )
+        print(line)
+
+
 def print_cli_summary(
     label: str,
     analyzer: DatasetAnalyzer,
@@ -698,63 +809,82 @@ def print_cli_summary(
     call_counts = analyzer.call_counts()
     ccs         = stat_str(call_counts)
 
-    print(f"\n{'=' * 70}")
-    print(f"  {label} ({n} samples)")
-    print(f"{'=' * 70}")
+    print(f"\n{ANSI_BOLD}{'=' * 70}{ANSI_RESET}")
+    print(f"  {ANSI_BOLD}{label} ({n} samples){ANSI_RESET}")
+    print(f"{ANSI_BOLD}{'=' * 70}{ANSI_RESET}")
 
-    print(f"\n  WORKFLOW")
-    for wt, cnt in wf.most_common():
-        print(f"    {wt:20s}  {cnt:5d}  ({fmt_pct(cnt, n)})")
+    _section_header("WORKFLOW DISTRIBUTION")
+    if wf:
+        max_cnt = max(wf.values())
+        for wt, cnt in wf.most_common():
+            bar_w = int(cnt / max_cnt * 30)
+            bar = "█" * bar_w
+            print(f"    {wt:25s} {cnt:5d} ({fmt_pct(cnt, n):>5s})  {ANSI_CYAN}{bar}{ANSI_RESET}")
 
-    print(f"\n  TOP FUNCTIONS")
-    for fname, cnt in fn.most_common(10):
-        print(f"    {fname:35s}  {cnt:5d}  ({fmt_pct(cnt, n)})")
+    _section_header("QUERY CHARACTERISTICS")
+    print(f"    Length:       mean={qs['mean']}, median={qs['median']}, range=[{qs['min']}, {qs['max']}]")
+    empty_queries = sum(1 for q in qlens if q == 0)
+    if empty_queries:
+        _warn(f"Empty queries: {empty_queries}")
 
-    print(f"\n  QUERY")
-    print(f"    length:  mean={qs['mean']}, median={qs['median']}, range=[{qs['min']}, {qs['max']}]")
-
-    print(f"\n  ARGUMENTS")
-    print(f"    params per sample:  mean={acs['mean']}, median={acs['median']}, range=[{acs['min']}, {acs['max']}]")
+    _section_header("ARGUMENTS")
+    print(f"    Params/sample:  mean={acs['mean']}, median={acs['median']}, range=[{acs['min']}, {acs['max']}]")
     arg_keys, arg_types, _ = analyzer.argument_params()
-    print(f"    unique param names: {len(arg_keys)}")
+    print(f"    Unique param names: {len(arg_keys)}")
     if arg_keys:
-        print(f"    top: {dict(arg_keys.most_common(8))}")
-
-    print(f"\n  CALLS")
+        print(f"    Top params: {dict(arg_keys.most_common(8))}")
     with_calls = sum(1 for c in call_counts if c > 0)
-    print(f"    samples with calls: {fmt_ratio(with_calls, n)}")
-    print(f"    calls per sample:   mean={ccs['mean']}, median={ccs['median']}, range=[{ccs['min']}, {ccs['max']}]")
+    print(f"    Samples with calls[]: {fmt_ratio(with_calls, n)}")
+    print(f"    Calls/sample:         mean={ccs['mean']}, median={ccs['median']}, range=[{ccs['min']}, {ccs['max']}]")
 
-    print(f"\n  RETRIEVED FUNCTIONS")
+    _section_header("RETRIEVAL COVERAGE")
     rf_counts = analyzer.retrieved_functions_counts()
     rfs       = stat_str(rf_counts)
-    print(f"    count: mean={rfs['mean']}, range=[{rfs['min']}, {rfs['max']}]")
-
-    print(f"\n  RETRIEVED ARGUMENT VALUES")
+    print(f"    Retrieved functions:  mean={rfs['mean']}, range=[{rfs['min']}, {rfs['max']}]")
     rav_present, rav_total = analyzer.argument_value_presence()
-    print(f"    enriched: {fmt_ratio(rav_present, rav_total)}")
+    print(f"    Arg values enriched:  {fmt_ratio(rav_present, rav_total)}")
 
-    print(f"\n  DATA QUALITY")
+    _section_header("DATA QUALITY")
     id_info = analyzer.id_analysis()
-    print(f"    valid UUIDs: {fmt_ratio(id_info['valid_uuids'], id_info['total'])}")
+    if id_info["valid_uuids"] == id_info["total"]:
+        _ok(f"All {id_info['total']} IDs are valid UUIDs")
+    else:
+        _warn(f"UUIDs: {fmt_ratio(id_info['valid_uuids'], id_info['total'])}")
     if id_info["duplicates"]:
-        print(f"    duplicate IDs: {id_info['duplicates']}")
+        _err(f"Duplicate IDs: {id_info['duplicates']}")
+    if id_info["empty"]:
+        _err(f"Empty IDs: {id_info['empty']}")
 
     wf_mm = analyzer.workflow_mismatch()
     if wf_mm:
-        print(f"    workflow mismatches: {len(wf_mm)}")
+        _warn(f"Workflow mismatches: {len(wf_mm)}")
+    else:
+        _ok("No workflow mismatches")
 
     fn_mm = analyzer.primary_vs_gt_function_mismatch()
     if fn_mm:
-        print(f"    function name mismatches: {len(fn_mm)}")
+        _warn(f"Function name mismatches: {len(fn_mm)}")
+    else:
+        _ok("No function name mismatches")
 
     missing = analyzer.missing_fields()
     if missing:
-        print(f"    missing fields: {missing}")
+        _err(f"Missing fields: {missing}")
+    else:
+        _ok("No missing required fields")
 
     call_fn = analyzer.call_function_distribution()
     if call_fn:
-        print(f"    unique call functions: {len(call_fn)}")
+        print(f"    Unique call functions: {_bold(str(len(call_fn)))}")
+
+    _section_header("TOP 10 PRIMARY FUNCTIONS")
+    print_cli_table(
+        ["Function", "Count", "Percent", "Distribution"],
+        [
+            [fname, str(cnt), fmt_pct(cnt, n), ascii_bar(100.0 * cnt / n, 25)]
+            for fname, cnt in fn.most_common(10)
+        ],
+    )
 
     # Schema coverage
     if schema:
@@ -775,43 +905,160 @@ def print_cli_summary(
         if not_in_schema and full_library:
             truly_missing = not_in_schema - set(full_library.keys())
             if truly_missing:
-                print(f"    hallucinated functions: {len(truly_missing)} — {sorted(truly_missing)}")
+                print(f"\n  {ANSI_RED}Hallucinated functions: {len(truly_missing)} — {sorted(truly_missing)}{ANSI_RESET}")
+
+    print()
+
+
+def print_function_analysis(
+    train_analyzer: DatasetAnalyzer,
+    test_analyzer: DatasetAnalyzer,
+    full_library: dict | None,
+) -> None:
+    """Print a detailed table of ALL functions referenced in train and/or test."""
+    train_ref = train_analyzer.collect_all_referenced_functions()
+    test_ref = test_analyzer.collect_all_referenced_functions()
+    all_funcs = sorted(set(list(train_ref.keys()) + list(test_ref.keys())))
+
+    if not all_funcs:
+        _warn("No functions found in datasets")
+        return
+
+    print(f"\n{ANSI_BOLD}{'=' * 70}{ANSI_RESET}")
+    print(f"  {ANSI_BOLD}COMPREHENSIVE FUNCTION ANALYSIS ({len(all_funcs)} total){ANSI_RESET}")
+    print(f"{ANSI_BOLD}{'=' * 70}{ANSI_RESET}")
+
+    headers = ["Function", "Params (lib)", "Req (lib)", "Train (samples)", "Test (samples)", "Total", "Library Info"]
+    rows = []
+
+    for func_name in all_funcs:
+        tc = train_ref.get(func_name, 0)
+        tsc = test_ref.get(func_name, 0)
+        total_ref = tc + tsc
+
+        # Library info
+        lib_info = ""
+        if full_library and func_name in full_library:
+            schema = full_library[func_name]
+            desc = schema.get("description", "")
+            lib_info = desc[:60] + ("..." if len(desc) > 60 else "")
+        else:
+            lib_info = f"{ANSI_RED}NOT IN LIBRARY{ANSI_RESET}"
+
+        param_count = 0
+        required_count = 0
+        if full_library and func_name in full_library:
+            params = full_library[func_name].get("parameters", {})
+            param_count = len(params)
+            required_count = sum(
+                1 for p in params.values()
+                if isinstance(p, dict) and p.get("required")
+            )
+
+        rows.append([
+            func_name,
+            str(param_count),
+            str(required_count),
+            str(tc),
+            str(tsc),
+            str(total_ref),
+            lib_info,
+        ])
+
+    print_cli_table(headers, rows)
+    print()
+
+    # Summary stats about function coverage
+    _section_header("FUNCTION COVERAGE SUMMARY")
+    train_only = sorted(set(train_ref.keys()) - set(test_ref.keys()))
+    test_only = sorted(set(test_ref.keys()) - set(train_ref.keys()))
+    overlap = sorted(set(train_ref.keys()) & set(test_ref.keys()))
+
+    if train_only:
+        _info(f"Train-only: {len(train_only)} — {', '.join(train_only)}")
+    if test_only:
+        _info(f"Test-only:  {len(test_only)} — {', '.join(test_only)}")
+    if overlap:
+        _ok(f"Overlap:    {len(overlap)} functions appear in both splits")
+
+    # Library coverage
+    if full_library:
+        in_lib = [f for f in all_funcs if f in full_library]
+        not_in_lib = [f for f in all_funcs if f not in full_library]
+        if not_in_lib:
+            _err(f"HALLUCINATED: {len(not_in_lib)} — {', '.join(not_in_lib)}")
+        else:
+            _ok(f"All {len(all_funcs)} referenced functions exist in library ({len(full_library)} total)")
+
+        # Functions in library but never referenced
+        never_ref = sorted(set(full_library.keys()) - set(all_funcs))
+        if never_ref:
+            _warn(f"Library functions never used: {len(never_ref)} — {', '.join(never_ref)}")
+        else:
+            _ok("All library functions are referenced in at least one split")
 
     print()
 
 
 def compare_datasets_cli(
-    train_analyzer: DatasetAnalyzer, test_analyzer: DatasetAnalyzer
+    train_analyzer: DatasetAnalyzer,
+    test_analyzer: DatasetAnalyzer,
+    full_library: dict | None = None,
 ) -> None:
-    print(f"{'=' * 70}")
-    print("  TRAIN vs TEST COMPARISON")
-    print(f"{'=' * 70}")
-    print(f"  {'':30s} {'TRAIN':>10s} {'TEST':>10s}")
-    print(f"  {'Samples':30s} {train_analyzer.n:>10d} {test_analyzer.n:>10d}")
+    print(f"\n{ANSI_BOLD}{'=' * 70}{ANSI_RESET}")
+    print(f"  {ANSI_BOLD}TRAIN vs TEST COMPARISON{ANSI_RESET}")
+    print(f"{ANSI_BOLD}{'=' * 70}{ANSI_RESET}")
+    print_cli_table(
+        ["Metric", "Train", "Test"],
+        [
+            ["Samples", str(train_analyzer.n), str(test_analyzer.n)],
+        ],
+    )
 
-    for wf in sorted(
+    all_wf = sorted(
         set(list(train_analyzer.workflow_distribution().keys()) + list(test_analyzer.workflow_distribution().keys()))
-    ):
-        tc  = train_analyzer.workflow_distribution().get(wf, 0)
-        tsc = test_analyzer.workflow_distribution().get(wf, 0)
-        tp  = fmt_pct(tc, train_analyzer.n)
-        tsp = fmt_pct(tsc, test_analyzer.n)
-        print(f"  {wf:30s} {tc:>5d} ({tp:>5s}) {tsc:>5d} ({tsp:>5s})")
+    )
+    if all_wf:
+        _section_header("Workflow Split")
+        for wf in all_wf:
+            tc  = train_analyzer.workflow_distribution().get(wf, 0)
+            tsc = test_analyzer.workflow_distribution().get(wf, 0)
+            tp  = fmt_pct(tc, train_analyzer.n)
+            tsp = fmt_pct(tsc, test_analyzer.n)
+            print(f"    {wf:25s}  {tc:5d} ({tp:>5s})  {tsc:5d} ({tsp:>5s})")
 
     train_fn = train_analyzer.function_name_distribution()
     test_fn  = test_analyzer.function_name_distribution()
     train_primaries = {k for k in train_fn if k != "none"}
     test_primaries = {k for k in test_fn if k != "none"}
-    print(f"  {'Unique primary functions':30s} {len(train_primaries):>10d} {len(test_primaries):>10d}")
-    print(f"  {'Overlap':30s} {len(train_primaries & test_primaries):>10d}")
-    print(f"  {'Train-only':30s} {len(train_primaries - test_primaries):>10d}")
-    print(f"  {'Test-only':30s} {len(test_primaries - train_primaries):>10d}")
 
     train_call_fn = train_analyzer.call_function_distribution()
     test_call_fn  = test_analyzer.call_function_distribution()
     train_all     = train_primaries | set(train_call_fn.keys())
     test_all      = test_primaries | set(test_call_fn.keys())
-    print(f"  {'All referenced functions':30s} {len(train_all):>10d} {len(test_all):>10d}")
+
+    _section_header("Function Coverage")
+    print(f"    {'Primary functions (unique)':40s} {len(train_primaries):>5d} {len(test_primaries):>5d}")
+    print(f"    {'All referenced functions':40s} {len(train_all):>5d} {len(test_all):>5d}")
+    print(f"    {'Overlap':40s} {len(train_primaries & test_primaries):>5d}")
+    print(f"    {'Train-only':40s} {len(train_primaries - test_primaries):>5d}")
+    print(f"    {'Test-only':40s} {len(test_primaries - train_primaries):>5d}")
+
+    # Show top-5 most imbalanced functions
+    _section_header("Top-5 Most Imbalanced Functions")
+    all_joint = sorted(set(train_primaries | test_primaries))
+    imbalances = []
+    for fn in all_joint:
+        tc = train_fn.get(fn, 0)
+        tsc = test_fn.get(fn, 0)
+        if tc + tsc > 0:
+            ratio = tc / (tc + tsc) if (tc + tsc) > 0 else 0
+            imbalances.append((abs(0.5 - ratio), fn, tc, tsc))
+    imbalances.sort(reverse=True)
+    for _, fn, tc, tsc in imbalances[:5]:
+        bar = ascii_bar(100.0 * tc / (tc + tsc) if (tc + tsc) > 0 else 50, 20)
+        print(f"    {fn:40s}  train={tc:>4d}  test={tsc:>4d}  {bar}")
+
     print()
 
 
@@ -859,14 +1106,15 @@ def main():
     # ── CLI output ────────────────────────────────────────────────────────
     print_cli_summary("TRAIN DATASET", train_analyzer, train_schema, full_library)
     print_cli_summary("TEST DATASET", test_analyzer, test_schema, full_library)
-    compare_datasets_cli(train_analyzer, test_analyzer)
+    print_function_analysis(train_analyzer, test_analyzer, full_library)
+    compare_datasets_cli(train_analyzer, test_analyzer, full_library)
 
     if train_clean_analyzer:
         removed = train_analyzer.n - train_clean_analyzer.n
-        print(f"  CLEAN TRAIN: {train_analyzer.n} → {train_clean_analyzer.n} ({removed} removed)")
+        print(f"\n  CLEAN TRAIN: {train_analyzer.n} → {train_clean_analyzer.n} ({removed} removed, {fmt_pct(removed, train_analyzer.n)})")
     if test_clean_analyzer:
         removed = test_analyzer.n - test_clean_analyzer.n
-        print(f"  CLEAN TEST:  {test_analyzer.n} → {test_clean_analyzer.n} ({removed} removed)")
+        print(f"  CLEAN TEST:  {test_analyzer.n} → {test_clean_analyzer.n} ({removed} removed, {fmt_pct(removed, test_analyzer.n)})")
 
     # ── Markdown report ───────────────────────────────────────────────────
     if args.report:
@@ -892,12 +1140,140 @@ def main():
         if test_clean_analyzer:
             clean_comparison(test_analyzer, test_clean_analyzer, "Test", report)
 
+        function_analysis_report(train_analyzer, test_analyzer, full_library, report)
+
         report.add(_build_recommendations(train_analyzer, test_analyzer, full_library))
 
         Path(args.report).parent.mkdir(parents=True, exist_ok=True)
         with open(args.report, "w", encoding="utf-8") as f:
             f.write(report.build())
         print(f"\n📄 Report written to {args.report}")
+
+
+def function_analysis_report(
+    train_analyzer: DatasetAnalyzer,
+    test_analyzer: DatasetAnalyzer,
+    full_library: dict | None,
+    report: ReportBuilder,
+) -> None:
+    """Add a detailed per-function analysis section to the markdown report."""
+    report.h2("Per-Function Analysis")
+
+    train_ref = train_analyzer.collect_all_referenced_functions()
+    test_ref = test_analyzer.collect_all_referenced_functions()
+    all_funcs = sorted(set(list(train_ref.keys()) + list(test_ref.keys())))
+
+    if not all_funcs:
+        report.add("_No functions found in datasets._")
+        return
+
+    # Build parameter summary for each function
+    func_param_info: dict[str, dict] = {}
+    if full_library:
+        for fname, schema in full_library.items():
+            params = schema.get("parameters", {})
+            required = [
+                p for p, info in params.items()
+                if isinstance(info, dict) and info.get("required")
+            ]
+            optional = [
+                p for p, info in params.items()
+                if isinstance(info, dict) and not info.get("required")
+            ]
+            func_param_info[fname] = {
+                "total_params": len(params),
+                "required": required,
+                "optional": optional,
+                "description": schema.get("description", ""),
+            }
+
+    rows = []
+    for func_name in all_funcs:
+        tc = train_ref.get(func_name, 0)
+        tsc = test_ref.get(func_name, 0)
+        total_ref = tc + tsc
+
+        in_lib = full_library and func_name in full_library
+        if in_lib and func_name in func_param_info:
+            info = func_param_info[func_name]
+            desc_short = info["description"][:80]
+            params_str = f"{info['total_params']} ({len(info['required'])} req, {len(info['optional'])} opt)"
+            req_params = ", ".join(info["required"]) if info["required"] else "—"
+        else:
+            desc_short = "⚠️ NOT IN LIBRARY"
+            params_str = "—"
+            req_params = "—"
+
+        train_only_str = "✓" if func_name in train_ref and func_name not in test_ref else ""
+        test_only_str = "✓" if func_name in test_ref and func_name not in train_ref else ""
+
+        split_info = "both" if tc > 0 and tsc > 0 else "train" if tc > 0 else "test"
+        rows.append([
+            func_name,
+            desc_short,
+            params_str,
+            req_params,
+            str(tc),
+            str(tsc),
+            str(total_ref),
+            split_info,
+        ])
+
+    report.h3(f"All Referenced Functions ({len(all_funcs)} total)")
+    report.add_table(
+        ["Function", "Description", "Params (lib)", "Required Params (lib)", "Train (samples)", "Test (samples)", "Total", "Split"],
+        rows,
+    )
+
+    # Summary stats
+    report.h3("Function Coverage Summary")
+    in_lib_count = sum(1 for f in all_funcs if full_library and f in full_library)
+    not_in_lib = [f for f in all_funcs if not (full_library and f in full_library)]
+    train_only = sorted(set(train_ref.keys()) - set(test_ref.keys()))
+    test_only = sorted(set(test_ref.keys()) - set(train_ref.keys()))
+    overlap = sorted(set(train_ref.keys()) & set(test_ref.keys()))
+
+    if overlap:
+        report.add(f"- ✅ **Overlapping functions** (both splits): {len(overlap)}")
+    if train_only:
+        report.add(f"- 📌 **Train-only functions**: {len(train_only)} — {', '.join(train_only)}")
+    if test_only:
+        report.add(f"- 📌 **Test-only functions**: {len(test_only)} — {', '.join(test_only)}")
+
+    report.add_key_value("Referenced functions in library", fmt_ratio(in_lib_count, len(all_funcs)))
+    if not_in_lib:
+        report.add(f"- ❌ **Not in library**: {len(not_in_lib)} — {', '.join(not_in_lib)}")
+
+    if full_library:
+        never_ref = sorted(set(full_library.keys()) - set(all_funcs))
+        if never_ref:
+            report.add(f"- ⚠️ **Library functions never referenced**: {len(never_ref)} — {', '.join(never_ref)}")
+        else:
+            report.add("- ✅ All library functions are referenced in at least one split")
+
+    # Distribution balance table
+    report.h3("Most Imbalanced Functions")
+    balance_rows = []
+    for fn in all_funcs:
+        tc = train_ref.get(fn, 0)
+        tsc = test_ref.get(fn, 0)
+        if tc + tsc > 0:
+            train_pct = 100.0 * tc / (tc + tsc)
+            test_pct = 100.0 * tsc / (tc + tsc)
+            imbalance = abs(50.0 - train_pct)
+            if imbalance > 15:
+                balance_rows.append([fn, tc, tsc, f"{train_pct:.0f}% / {test_pct:.0f}%", f"{imbalance:.0f}%"])
+
+    if balance_rows:
+        balance_rows.sort(key=lambda r: -abs(50.0 - float(r[3].split("%")[0])))
+        report.add_table(
+            ["Function", "Train", "Test", "Split %", "Imbalance"],
+            balance_rows,
+        )
+
+    report.add()
+    report.add("---")
+    report.add()
 
 
 def _build_recommendations(
