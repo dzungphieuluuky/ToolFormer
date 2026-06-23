@@ -100,13 +100,13 @@ sft:
 
 dataset_generation:
   provider: "openrouter"
-  model: "openai/gpt-oss-120b:free"
+  model: "openai/gpt-oss-20b:free"
   api_key_env: "OPENROUTER_API_KEY"
   base_url: null
-  max_workers: 8
+  max_workers: 4
   requests_per_minute: 500
-  total_samples: 2400
-  train_split: 0.89
+  total_samples: 5000
+  train_split: 0.8
   temperature: 0.9
   max_tokens: 1024
   retry_attempts: 3

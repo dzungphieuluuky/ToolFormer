@@ -331,10 +331,10 @@ def main():
             train_schema_path=str(train_schema_path),
             test_schema_path   =str(test_schema_path),
             provider           =dg_cfg.get("provider", "openrouter"),
-            model              =dg_cfg.get("model", "meta-llama/llama-3.3-70b-instruct"),
+            model              =dg_cfg.get("model", "openai/gpt-oss-120b:free"),
             api_key            =os.getenv(dg_cfg.get("api_key_env", "OPENROUTER_API_KEY")),
             base_url           =dg_cfg.get("base_url"),
-            max_workers        =dg_cfg.get("max_workers", 8),
+            max_workers        =dg_cfg.get("max_workers", 12),
             requests_per_minute=dg_cfg.get("requests_per_minute", 500),
             temperature        =dg_cfg.get("temperature", 0.9),
             max_tokens         =dg_cfg.get("max_tokens", 1024),
@@ -345,7 +345,7 @@ def main():
             total                =total,
             output_dir           =data_cfg.get("processed_dir", "data/processed"),
             workflow_distribution=dg_cfg.get("workflow_distribution"),
-            train_split          =dg_cfg.get("train_split", 0.89),
+            train_split          =dg_cfg.get("train_split", 0.8),
         )
         logger.info(
             f"Generation complete: train={len(train_samples)}, test={len(test_samples)}"
