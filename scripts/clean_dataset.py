@@ -198,7 +198,11 @@ def clean_split(
             if len(stats["dropped_samples"][reason]) < 20:
                 stats["dropped_samples"][reason].append(sid)
 
-    # 5. Workflow distribution after filtering
+    # 5. Drop fields not needed by the training pipeline
+    for s in valid:
+        s.pop("function_name", None)
+
+    # 6. Workflow distribution after filtering
     for s in valid:
         stats["workflow_after"][s.get("workflow_type", "unknown")] += 1
 

@@ -14,6 +14,35 @@ import json
 import sys
 from collections import Counter
 from pathlib import Path
+from typing import Any
+
+
+def _parse_ground_truth(gt: Any) -> dict | None:
+    """Normalise ground_truth from dict or JSON string. Mirrors clean_dataset.py."""
+    if isinstance(gt, str):
+        try:
+            gt = json.loads(gt)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return gt if isinstance(gt, dict) else None
+
+
+def extract_calls(gt: Any) -> list[dict]:
+    """Return the calls list from ground_truth, or empty list if unparseable."""
+    parsed = _parse_ground_truth(gt)
+    if parsed is None:
+        return []
+    calls = parsed.get("calls")
+    return calls if isinstance(calls, list) else []
+
+
+def extract_function_names(sample: dict) -> list[str]:
+    """Return function names from ground_truth calls, or ['<missing>']."""
+    calls = extract_calls(sample.get("ground_truth"))
+    if not calls:
+        return ["<missing>"]
+    names = [c.get("function", "<unknown>") for c in calls if isinstance(c, dict)]
+    return names if names else ["<missing_function_name>"]
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -64,7 +93,7 @@ def inspect_all(data_dir: str) -> int:
     if train_samples is None or test_samples is None:
         return 1
     if function_library is None:
-    print("WARNING: function_library.json not found — skipping function-related stats", file=sys.stderr)
+        print("WARNING: function_library.json not found — skipping function-related stats", file=sys.stderr)
     if argument_values is None:
         print("WARNING: argument_values.json not found — skipping arg-value coverage", file=sys.stderr)
 
@@ -99,10 +128,16 @@ def inspect_all(data_dir: str) -> int:
                 print(f"    {wf:20s}: {wf_counts[wf]:5d}  (UNKNOWN)")
 
     # ── 3. Function frequency ──────────────────────────────────────────
+    # Extracted from ground_truth.calls (not the top-level function_name field,
+    # which is dropped by clean_dataset.py). Parallel samples may contribute
+    # multiple function names.
     print_section("3. Function frequency")
     for split_name, samples in [("TRAIN", train_samples), ("TEST", test_samples)]:
         print(f"\n  [{split_name}]")
-        fn_counts = Counter(s.get("function_name", "<missing>") for s in samples)
+        fn_counts: Counter = Counter()
+        for s in samples:
+            for fn in extract_function_names(s):
+                fn_counts[fn] += 1
         # Add functions from schemas with 0 usage
         if all_funcs:
             for fn in sorted(all_funcs):
@@ -117,7 +152,7 @@ def inspect_all(data_dir: str) -> int:
         # Functions used but not in library
         if function_library:
             for fn in fn_counts:
-                if fn not in all_funcs and fn != "<missing>":
+                if fn not in all_funcs and fn not in ("<missing>", "<missing_function_name>", "<unknown>"):
                     print(f"    {fn:35s}: {fn_counts[fn]:5d}  (NOT IN LIBRARY)")
 
     # ── 4. Ground truth call stats ─────────────────────────────────────
@@ -128,14 +163,7 @@ def inspect_all(data_dir: str) -> int:
         non_empty = 0
         call_counts: Counter = Counter()
         for s in samples:
-            gt = s.get("ground_truth")
-            if not isinstance(gt, dict):
-                call_counts[0] += 1
-                continue
-            calls = gt.get("calls")
-            if not isinstance(calls, list):
-                call_counts[0] += 1
-                continue
+            calls = extract_calls(s.get("ground_truth"))
             n = len(calls)
             call_counts[n] += 1
             if n == 0:
@@ -176,12 +204,8 @@ def inspect_all(data_dir: str) -> int:
             wf = s.get("workflow_type")
             if wf == "abstention":
                 continue
-            gt = s.get("ground_truth")
-            if not isinstance(gt, dict):
-                error_count += 1
-                continue
-            calls = gt.get("calls")
-            if not isinstance(calls, list) or len(calls) == 0:
+            calls = extract_calls(s.get("ground_truth"))
+            if len(calls) == 0:
                 error_count += 1
         if error_count > 0:
             has_warnings = True
@@ -193,12 +217,8 @@ def inspect_all(data_dir: str) -> int:
             leak_count = 0
             seen: set[str] = set()
             for s in samples:
-                gt = s.get("ground_truth")
-                if not isinstance(gt, dict):
-                    continue
-                for c in gt.get("calls", []):
-                    if not isinstance(c, dict):
-                        continue
+                calls = extract_calls(s.get("ground_truth"))
+                for c in calls:
                     fn = c.get("function", "")
                     if fn in test_only_funcs:
                         seen.add(fn)
