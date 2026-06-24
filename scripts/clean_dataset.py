@@ -4,9 +4,9 @@ clean_dataset.py — Validate, standardise, and deduplicate toolformer JSONL dat
 
 Usage:
     python scripts/clean_dataset.py \\
-        --input-train data/processed/train_dataset.jsonl \\
-        --input-test data/processed/test_dataset.jsonl \\
-        --function-library data/processed/function_library.json \\
+        --input-train data/generated/v1.0/train_dataset_cleaned.jsonl \\
+        --input-test data/generated/v1.0/test_dataset_cleaned.jsonl \\
+        --function-library data/generated/v1.0/function_library.json \\
         --output-dir data/processed/clean
 
 Validates every sample against:
@@ -24,6 +24,7 @@ Drops invalid samples and writes a JSON report with detailed stats.
 stdlib only — no external dependencies.
 """
 
+from email.policy import default
 import json
 import sys
 import argparse
@@ -316,23 +317,27 @@ def main() -> None:
     )
     parser.add_argument(
         "--input-train",
-        default="data/processed/train_dataset.jsonl",
-        help="Path to training JSONL (default: data/processed/train_dataset.jsonl)",
+        default=None,
+        required=True,
+        help="Path to training JSONL need to clean",
     )
     parser.add_argument(
         "--input-test",
-        default="data/processed/test_dataset.jsonl",
-        help="Path to test JSONL (default: data/processed/test_dataset.jsonl)",
+        default=None,
+        required=True,
+        help="Path to test JSONL need to clean",
     )
     parser.add_argument(
         "--function-library",
-        default="data/processed/function_library.json",
-        help="Path to function library JSON (default: data/processed/function_library.json)",
+        default=None,
+        required=True,
+        help="Path to function library JSON",
     )
     parser.add_argument(
         "--output-dir",
-        default="data/processed/clean",
-        help="Output directory for cleaned files (default: data/processed/clean)",
+        default=None,
+        required=True,
+        help="Output directory for cleaned files (default: data/cleaned)",
     )
     args = parser.parse_args()
 
@@ -361,7 +366,7 @@ def main() -> None:
 
         # Write output
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{split_name}_dataset.jsonl"
+        output_path = output_dir / f"{split_name}_dataset_cleaned.jsonl"
         with open(output_path, "w", encoding="utf-8") as f:
             for s in valid_samples:
                 f.write(json.dumps(s, ensure_ascii=False) + "\n")

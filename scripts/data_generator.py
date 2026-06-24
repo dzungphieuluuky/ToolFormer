@@ -420,8 +420,8 @@ class TelcoDatasetGenerator:
     Usage
     ─────
     gen = TelcoDatasetGenerator.from_schemas(
-        train_schema_path="data/processed/function_schema_train.json",
-        test_schema_path="data/processed/function_schema_test.json",
+        train_schema_path="data/generated/v1.0/function_schema_train.json",
+        test_schema_path="data/generated/v1.0/function_schema_test.json",
         provider="openai",
         model="gpt-4o-mini",
     )
@@ -508,7 +508,7 @@ class TelcoDatasetGenerator:
         cls,
         train_schema_path: str,
         test_schema_path: str,
-        argument_values_path: str | None = "data/processed/argument_values.json",
+        argument_values_path: str | None = "data/generated/v1.0/argument_values.json",
         **kwargs,
     ) -> "TelcoDatasetGenerator":
         """Build generator from two separate schema JSON files."""
@@ -528,13 +528,13 @@ class TelcoDatasetGenerator:
         """Build from a loaded YAML config dict (dataset_generation section)."""
         dg = config.get("dataset_generation", config)
         train_schema = config.get("data", {}).get(
-            "train_schema_path", "data/processed/function_schema_train.json"
+            "train_schema_path", "data/generated/v1.0/function_schema_train.json"
         )
         test_schema = config.get("data", {}).get(
-            "test_schema_path", "data/processed/function_schema_test.json"
+            "test_schema_path", "data/generated/v1.0/function_schema_test.json"
         )
         arg_values = config.get("data", {}).get(
-            "argument_values_path", "data/processed/argument_values.json"
+            "argument_values_path", "data/generated/v1.0/argument_values.json"
         )
         return cls.from_schemas(
             train_schema_path=train_schema,
@@ -555,7 +555,7 @@ class TelcoDatasetGenerator:
     def generate(
         self,
         total: int = 2400,
-        output_dir: str = "data/processed",
+        output_dir: str = "data/generated/v1.0",
         workflow_distribution: dict | None = None,
         train_split: float = 0.89,
     ) -> tuple[list[DataSample], list[DataSample]]:
@@ -986,9 +986,9 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     # Example: generate dataset with default settings
     generator = TelcoDatasetGenerator.from_schemas(
-        train_schema_path="data/processed/function_schema_train.json",
-        test_schema_path="data/processed/function_schema_test.json",
-        argument_values_path="data/processed/argument_values.json",
+        train_schema_path="data/generated/v1.0/function_schema_train.json",
+        test_schema_path="data/generated/v1.0/function_schema_test.json",
+        argument_values_path="data/generated/v1.0/argument_values.json",
         provider="openai",
         model="gpt-4o-mini",
     )

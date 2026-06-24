@@ -14,7 +14,7 @@ Orchestrates full data preparation:
 Usage
 ─────
   python scripts/prepare_data.py [--config config/base_config.yaml] \
-                                  [--train-schema data/processed/function_schema_train.json] \
+                                  [--train-schema data/generated/v1.0/function_schema_train.json] \
                                   [--test-schema  data/processed/function_schema_test.json] \
                                   [--excel  data/raw/telecom_functions.xlsx] \
                                   [--skip-generation] \
@@ -204,7 +204,7 @@ def main():
     single_schema_path = args.schema or data_cfg.get("function_schema_path")
     excel_path = args.excel or "data/raw/telecom_functions.xlsx"
     lib_path = data_cfg.get(
-        "function_library_path", "data/processed/function_library.json"
+        "function_library_path", "data/generated/v1.0/function_library.json"
     )
 
     if train_schema_path and test_schema_path:
@@ -228,9 +228,9 @@ def main():
                 "No function source found!\n"
                 "Provide one of:\n"
                 "  --train-schema and --test-schema\n"
-                "  --schema data/processed/function_schema.json\n"
+                "  --schema data/generated/v1.0/function_schema.json\n"
                 "  --excel  data/raw/telecom_functions.xlsx\n"
-                "  OR ensure data/processed/function_library.json exists."
+                "  OR ensure data/generated/v1.0/function_library.json exists."
             )
             sys.exit(1)
 
@@ -249,7 +249,7 @@ def main():
             reserved_test_functions=reserved_count,
         )
 
-        out_dir = Path(data_cfg.get("processed_dir", "data/processed"))
+        out_dir = Path(data_cfg.get("processed_dir", "data/generated/v1.0"))
         out_dir.mkdir(parents=True, exist_ok=True)
         train_schema_path = out_dir / "function_schema_train.json"
         test_schema_path = out_dir / "function_schema_test.json"
@@ -284,7 +284,7 @@ def main():
 
     # ── Step 2: Build argument values catalog ─────────────────────────────────
     arg_val_path = data_cfg.get(
-        "argument_values_path", "data/processed/argument_values.json"
+        "argument_values_path", "data/generated/v1.0/argument_values.json"
     )
     if not Path(arg_val_path).exists():
         logger.info("Building argument values catalog...")
@@ -299,7 +299,7 @@ def main():
     logger.info(f"Argument catalog: {len(argument_values)} parameter types")
 
     # ── Step 3: Build retrieval index ─────────────────────────────────────────
-    index_dir = data_cfg.get("retrieval_index_dir", "data/processed/retrieval_index")
+    index_dir = data_cfg.get("retrieval_index_dir", "data/generated/v1.0/retrieval_index")
     func_retriever = FunctionRetriever(
         function_library=full_library,
         method=ret_cfg.get("method", "hybrid"),
@@ -314,10 +314,10 @@ def main():
     # ── Step 4: Generate synthetic dataset ────────────────────────────────────
     # Raw output paths (generator writes these)
     raw_train_path = data_cfg.get(
-        "raw_train_path", "data/processed/raw_train_dataset.jsonl"
+        "raw_train_path", "data/generated/v1.0/raw_train_dataset.jsonl"
     )
     raw_test_path = data_cfg.get(
-        "raw_test_path", "data/processed/raw_test_dataset.jsonl"
+        "raw_test_path", "data/generated/v1.0/raw_test_dataset.jsonl"
     )
 
     if not args.skip_generation:
@@ -343,7 +343,7 @@ def main():
 
         train_samples, test_samples = generator.generate(
             total=total,
-            output_dir=data_cfg.get("processed_dir", "data/processed"),
+            output_dir=data_cfg.get("processed_dir", "data/generated/v1.0"),
             workflow_distribution=dg_cfg.get("workflow_distribution"),
             train_split=dg_cfg.get("train_split", 0.8),
         )
@@ -373,9 +373,9 @@ def main():
         final_test_path = str(out_dir / "test_dataset.jsonl")
     else:
         final_train_path = data_cfg.get(
-            "train_path", "data/processed/train_dataset.jsonl"
+            "train_path", "data/generated/v1.0/train_dataset.jsonl"
         )
-        final_test_path = data_cfg.get("test_path", "data/processed/test_dataset.jsonl")
+        final_test_path = data_cfg.get("test_path", "data/generated/v1.0/test_dataset.jsonl")
 
     if not args.skip_enrichment:
         val_retriever = ArgumentValueRetriever(

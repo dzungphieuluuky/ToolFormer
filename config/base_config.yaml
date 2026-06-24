@@ -26,33 +26,40 @@ lora:
   use_gradient_checkpointing: "unsloth"
 
 data:
-  # ── Processed output directory ──────────────────────────────────────────
-  processed_dir: "data/processed"
+  # ── Root data directories ──────────────────────────────────────────────────
+  data_root: "data"
+  sources_dir: "data/sources"
+  processed_dir: "data/generated/v1.0"
 
   # ── Function schema files (written by prepare_data.py) ──────────────────
   # These are the PRIMARY schema sources for the generator.
   # If you only have a single schema file, prepare_data.py will split it
   # into these two automatically.
-  train_schema_path: "data/processed/function_schema_train.json"
-  test_schema_path:  "data/processed/function_schema_test.json"
+  train_schema_path: "data/generated/v1.0/function_schema_train.json"
+  test_schema_path:  "data/generated/v1.0/function_schema_test.json"
 
   # ── Full merged library (train + test, used by retriever + trainer) ──────
-  function_library_path: "data/processed/function_library.json"
+  function_library_path: "data/generated/v1.0/function_library.json"
 
   # ── Argument value catalog (built by build_argument_values.py) ───────────
-  argument_values_path: "data/processed/argument_values.json"
+  argument_values_path: "data/generated/v1.0/argument_values.json"
 
   # ── Raw generator output (before enrichment) ────────────────────────────
-  raw_train_path: "data/processed/raw_train_dataset.jsonl"
-  raw_test_path:  "data/processed/raw_test_dataset.jsonl"
+  raw_train_path: "data/generated/v1.0/raw_train_dataset.jsonl"
+  raw_test_path:  "data/generated/v1.0/raw_test_dataset.jsonl"
 
   # ── Final enriched dataset (after argument value retrieval) ─────────────
   # These are what SFT / GRPO trainers load.
-  train_path: "data/processed/train_dataset.jsonl"
-  test_path:  "data/processed/test_dataset.jsonl"
+  train_path: "data/generated/v1.0/train_dataset_cleaned.jsonl"
+  test_path:  "data/generated/v1.0/test_dataset_cleaned.jsonl"
+
+  # ── Validated dataset (after clean/filter pass, ~11% dropped) ──────────────
+  # Recommended for training; fewer samples but higher quality.
+  validated_train_path: "data/generated/v1.0/train_dataset_cleaned.jsonl"
+  validated_test_path:  "data/generated/v1.0/test_dataset_cleaned.jsonl"
 
   # ── Retrieval index ───────────────────────────────────────────────────────
-  retrieval_index_dir: "data/processed/retrieval_index"
+  retrieval_index_dir: "data/generated/v1.0/retrieval_index"
 
   # ── Sequence lengths ──────────────────────────────────────────────────────
   max_prompt_length:     1024
