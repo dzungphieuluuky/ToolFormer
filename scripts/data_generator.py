@@ -108,7 +108,6 @@ class _APIClient:
         self.provider = provider.lower()
         self.model = model
         self._client = self._build_client(api_key, base_url)
-        logger.info(f"API client initialized: provider={provider}, model={model}")
 
     def _build_client(self, api_key: str, base_url: str | None):
         if self.provider == "openai":
@@ -476,11 +475,11 @@ class TelcoDatasetGenerator:
                         self._primary_catalog_keys.append(key)
                 if len(self._catalog) < len(raw_catalog):
                     logger.info(
-                        f"Deduplicated catalog: {len(raw_catalog)} raw → {len(self._catalog)} primary keys"
+                        f"Argument catalog: {len(raw_catalog)} raw → {len(self._catalog)} deduplicated keys"
                     )
                 else:
                     logger.info(
-                        f"Loaded argument values catalog: {len(self._catalog)} keys from {av_path}"
+                        f"Argument catalog: {len(self._catalog)} keys"
                     )
             else:
                 logger.warning(f"Argument values path not found: {av_path}")
@@ -497,9 +496,9 @@ class TelcoDatasetGenerator:
             )
         self.client = _APIClient(provider, model, _key, base_url)
         logger.info(
-            f"Generator initialized: provider={provider}, model={model}, "
-            f"train_funcs={len(self.train_func_names)}, test_funcs={len(self.test_func_names)}, "
-            f"max_workers={max_workers}, rpm={requests_per_minute}, seed={seed}"
+            f"Generator: {model} ({provider}) | "
+            f"{len(self.train_func_names)} train + {len(self.test_func_names)} test funcs | "
+            f"workers={max_workers} rpm={requests_per_minute}"
         )
 
     # ── factory methods ──────────────────────────────────────────────────────
@@ -513,10 +512,8 @@ class TelcoDatasetGenerator:
         **kwargs,
     ) -> "TelcoDatasetGenerator":
         """Build generator from two separate schema JSON files."""
-        logger.info(f"Loading train schema from {train_schema_path}")
         with open(train_schema_path, "r", encoding="utf-8") as fh:
             train_library = json.load(fh)
-        logger.info(f"Loading test schema from {test_schema_path}")
         with open(test_schema_path, "r", encoding="utf-8") as fh:
             test_library = json.load(fh)
         return cls(
@@ -584,47 +581,41 @@ class TelcoDatasetGenerator:
             "parallel": 0.20,
             "abstention": 0.10,
         }
-        logger.info(f"Workflow distribution: {dist}")
 
         train_funcs = self.train_func_names
         test_funcs = self.test_func_names
 
-        logger.info(f"Train functions available: {len(train_funcs)}")
-        logger.info(f"Test functions available: {len(test_funcs)}")
-
-        # ── 2. Count per workflow type ───────────────────────────────────────
         counts = {wt: max(1, int(total * ratio)) for wt, ratio in dist.items()}
-        # adjust to hit exact total
         diff = total - sum(counts.values())
         counts["single_call"] += diff
-        logger.info(f"Workflow sample counts: {counts}")
+
+        logger.info(
+            f"Generating {total} samples "
+            f"({counts['single_call']} single, {counts['parallel']} parallel, {counts['abstention']} abstention) "
+            f"using {len(train_funcs)} train / {len(test_funcs)} test functions"
+        )
 
         # ── 3. Generate samples per workflow ────────────────────────────────
-        train_samples: list[DataSample] = []
-        logger.info("Generating training‑pool samples...")
-        train_samples += self._generate_single_calls(
-            counts["single_call"], train_funcs, split="train"
-        )
-        train_samples += self._generate_parallel(
-            counts["parallel"], train_funcs, split="train"
-        )
-        train_samples += self._generate_abstentions(
-            counts["abstention"], train_funcs, split="train"
-        )
-
-        # ── 4. Generate test samples from held‑out functions ─────────────────
         test_split = 1.0 - train_split
+        train_samples: list[DataSample] = []
         test_samples: list[DataSample] = []
-        logger.info("Generating test samples from held‑out functions...")
-        test_samples += self._generate_single_calls(
-            counts["single_call"] * test_split, test_funcs, split="test"
-        )
-        test_samples += self._generate_parallel(
-            counts["parallel"] * test_split, test_funcs, split="test"
-        )
-        test_samples += self._generate_abstentions(
-            counts["abstention"] * test_split, test_funcs, split="test"
-        )
+
+        stages = [
+            ("single_call (train)", train_funcs, counts["single_call"], "train", self._generate_single_calls),
+            ("parallel (train)",    train_funcs, counts["parallel"],    "train", self._generate_parallel),
+            ("abstention (train)",  train_funcs, counts["abstention"],  "train", self._generate_abstentions),
+            ("single_call (test)",  test_funcs,  int(counts["single_call"] * test_split), "test",  self._generate_single_calls),
+            ("parallel (test)",     test_funcs,  int(counts["parallel"] * test_split),    "test",  self._generate_parallel),
+            ("abstention (test)",   test_funcs,  int(counts["abstention"] * test_split),  "test",  self._generate_abstentions),
+        ]
+
+        with tqdm(total=total, desc="Generating", unit="sample", leave=True) as pbar:
+            for label, funcs, n, split, gen_fn in stages:
+                samples = gen_fn(n, funcs, split=split, pbar=pbar)
+                if split == "train":
+                    train_samples.extend(samples)
+                else:
+                    test_samples.extend(samples)
 
         # ── 5. Assign splits + simulate retrieved functions ──────────────────
         random.shuffle(train_samples)
@@ -635,23 +626,19 @@ class TelcoDatasetGenerator:
         for s in test_samples:
             s.split = "test"
 
-        logger.info(
-            f"Simulating retrieval for train ({len(train_samples)}) and test ({len(test_samples)}) samples..."
-        )
         self._simulate_retrieval(train_samples, k=10)
         self._simulate_retrieval(test_samples, k=10)
 
         # ── 7. Save ──────────────────────────────────────────────────────────
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        train_path = out / "unenriched_train_dataset.jsonl"
-        test_path = out / "unenriched_test_dataset.jsonl"
+        train_path = out / "raw_train_dataset.jsonl"
+        test_path = out / "raw_test_dataset.jsonl"
         self._save_jsonl(train_samples, train_path)
         self._save_jsonl(test_samples, test_path)
 
         logger.info(
-            f"Generation complete: train={len(train_samples)}, test={len(test_samples)} "
-            f"(saved to {out})"
+            f"Generation complete: train={len(train_samples)}, test={len(test_samples)}"
         )
         return train_samples, test_samples
 
@@ -663,9 +650,9 @@ class TelcoDatasetGenerator:
         func_pool: list[str],
         split: str = "train",
         batch_size: int = 5,
+        pbar: tqdm | None = None,
     ) -> list[DataSample]:
         """Generate single‑function‑call samples."""
-        logger.info(f"Generating {count} single_call samples (split={split})")
         tasks: list[tuple[str, int]] = []
         remaining = count
         while remaining > 0:
@@ -679,12 +666,7 @@ class TelcoDatasetGenerator:
             futures = {
                 pool.submit(self._call_single, fn, n): (fn, n) for fn, n in tasks
             }
-            for fut in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc="single_call",
-                leave=False,
-            ):
+            for fut in as_completed(futures):
                 fn, _ = futures[fut]
                 try:
                     raw_list = fut.result()
@@ -692,18 +674,19 @@ class TelcoDatasetGenerator:
                         s = self._parse_sample(raw, "single_call", split)
                         if s:
                             samples.append(s)
+                            if pbar is not None:
+                                pbar.update(1)
                 except Exception as exc:
                     logger.warning(f"single_call error for '{fn}': {exc}")
 
         self._rate_limit_wait(len(tasks))
-        logger.debug(f"Generated {len(samples)} single_call samples")
         return samples
 
     def _generate_parallel(
-        self, count: int, func_pool: list[str], split: str = "train"
+        self, count: int, func_pool: list[str], split: str = "train",
+        pbar: tqdm | None = None,
     ) -> list[DataSample]:
         """Generate parallel multi‑call samples."""
-        logger.info(f"Generating {count} parallel samples (split={split})")
         tasks: list[tuple[list[str], int]] = []
         remaining = count
         while remaining > 0:
@@ -718,27 +701,26 @@ class TelcoDatasetGenerator:
             futures = {
                 pool.submit(self._call_parallel, fns, n): fns for fns, n in tasks
             }
-            for fut in tqdm(
-                as_completed(futures), total=len(futures), desc="parallel", leave=False
-            ):
+            for fut in as_completed(futures):
                 fns = futures[fut]
                 try:
                     for raw in fut.result():
                         s = self._parse_sample(raw, "parallel", split)
                         if s:
                             samples.append(s)
+                            if pbar is not None:
+                                pbar.update(1)
                 except Exception as exc:
                     logger.warning(f"parallel error: {exc}")
 
         self._rate_limit_wait(len(tasks))
-        logger.debug(f"Generated {len(samples)} parallel samples")
         return samples
 
     def _generate_abstentions(
-        self, count: int, func_pool: list[str], split: str = "train"
+        self, count: int, func_pool: list[str], split: str = "train",
+        pbar: tqdm | None = None,
     ) -> list[DataSample]:
         """Generate refusal / abstention samples."""
-        logger.info(f"Generating {count} abstention samples (split={split})")
         tasks: list[tuple[list[str], int]] = []
         remaining = count
         while remaining > 0:
@@ -753,23 +735,19 @@ class TelcoDatasetGenerator:
             futures = {
                 pool.submit(self._call_abstention, fns, n): fns for fns, n in tasks
             }
-            for fut in tqdm(
-                as_completed(futures),
-                total=len(futures),
-                desc="abstention",
-                leave=False,
-            ):
+            for fut in as_completed(futures):
                 fns = futures[fut]
                 try:
                     for raw in fut.result():
                         s = self._parse_sample(raw, "abstention", split)
                         if s:
                             samples.append(s)
+                            if pbar is not None:
+                                pbar.update(1)
                 except Exception as exc:
                     logger.warning(f"abstention error: {exc}")
 
         self._rate_limit_wait(len(tasks))
-        logger.debug(f"Generated {len(samples)} abstention samples")
         return samples
 
     # ── API call methods ──────────────────────────────────────────────────────
