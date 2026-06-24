@@ -103,7 +103,7 @@ dataset_generation:
   model: "openai/gpt-oss-120b:free"
   api_key_env: "OPENROUTER_API_KEY"
   base_url: null
-  max_workers: 8
+  max_workers: 5
   requests_per_minute: 500
   total_samples: 5000
   train_split: 0.8
@@ -115,10 +115,6 @@ dataset_generation:
   # ── Function train/test split ─────────────────────────────────────────────
   # Used by prepare_data.py when splitting a single schema file.
   # Ignored when --train-schema and --test-schema are passed directly.
-  split:
-    reserved_test_functions: 5      # how many functions to hold out for test
-    test_function_names: null       # list specific names, or null for random
-
   workflow_distribution:
     single_call:  0.65
     parallel:     0.25
