@@ -1,5 +1,9 @@
 .omo/
+.opencode/
 *opencode.json
+*tui.json
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
