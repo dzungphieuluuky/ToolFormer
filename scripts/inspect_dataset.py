@@ -88,8 +88,8 @@ def inspect_all(data_dir: str) -> int:
     data_path = Path(data_dir)
 
     # ── Load data ──────────────────────────────────────────────────────
-    train_samples = load_jsonl(data_path / "train_dataset.jsonl")
-    test_samples = load_jsonl(data_path / "test_dataset.jsonl")
+    train_samples = load_jsonl(data_path / "train_dataset_cleaned.jsonl")
+    test_samples = load_jsonl(data_path / "test_dataset_cleaned.jsonl")
     function_library = load_json(data_path / "function_library.json")
     argument_values = load_json(data_path / "argument_values.json")
 
@@ -105,6 +105,9 @@ def inspect_all(data_dir: str) -> int:
             "WARNING: argument_values.json not found — skipping arg-value coverage",
             file=sys.stderr,
         )
+    print(f"Loaded {len(train_samples)} train samples, {len(test_samples)} test samples")
+    print(f"Loaded train samples from {data_path / 'train_dataset_cleaned.jsonl'}")
+    print(f"Loaded test samples from {data_path / 'test_dataset_cleaned.jsonl'}")
 
     test_only_funcs: set[str] = set()
     all_funcs: set[str] = set()
@@ -232,7 +235,7 @@ def inspect_all(data_dir: str) -> int:
 
     # 6b. Cross-split: train samples using test-only functions
     if test_only_funcs:
-        for split_name, samples in [("TRAIN", train_samples), ("TEST", test_samples)]:
+        for split_name, samples in [("TRAIN", train_samples)]:
             leak_count = 0
             seen: set[str] = set()
             for s in samples:
@@ -245,7 +248,7 @@ def inspect_all(data_dir: str) -> int:
             if leak_count > 0:
                 has_warnings = True
                 print(
-                    f"  [WARNING] {split_name}: {leak_count} calls to test-only functions ({', '.join(sorted(seen))})"
+                    f"  [WARNING] {split_name}: {leak_count} test-only functions existed in train samples ({', '.join(sorted(seen))})"
                 )
             else:
                 print(f"  [OK] {split_name}: no cross-split function leakage")
