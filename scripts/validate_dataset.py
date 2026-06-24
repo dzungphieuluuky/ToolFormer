@@ -31,15 +31,12 @@ VALID_WORKFLOWS = {"single_call", "parallel", "sequential", "abstention"}
 VALID_SPLITS = {"train", "test"}
 VALID_DATA_LEVELS = {"day", "week", "month", "quarter", "year"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 REQUIRED_FIELDS = [
     "id",
     "query",
     "workflow_type",
-    "function_name",
     "ground_truth",
     "retrieved_functions",
     "split",
@@ -118,12 +115,14 @@ def check_ground_truth(sample: dict) -> list[str]:
     if not isinstance(gt, dict):
         return [f"ground_truth is not a dict: {type(gt).__name__}"]
 
-    for key in ("calls", "workflow", "reasoning"):
+    for key in ("calls", "reasoning"):
         if key not in gt:
             errs.append(f"ground_truth missing key: {key!r}")
 
     if not isinstance(gt.get("calls"), list):
-        return errs + [f"ground_truth.calls is not a list: {type(gt.get('calls')).__name__}"]
+        return errs + [
+            f"ground_truth.calls is not a list: {type(gt.get('calls')).__name__}"
+        ]
 
     for ci, call in enumerate(gt["calls"]):
         if not isinstance(call, dict):
@@ -157,7 +156,9 @@ def check_ground_truth_calls_args(sample: dict, function_library: dict) -> list[
             continue
         schema = function_library.get(func_name)
         if schema is None:
-            errs.append(f"ground_truth.calls[{ci}].function {func_name!r} not in function library")
+            errs.append(
+                f"ground_truth.calls[{ci}].function {func_name!r} not in function library"
+            )
             continue
         params = schema.get("parameters", {})
         args = call.get("arguments", {})
@@ -166,11 +167,18 @@ def check_ground_truth_calls_args(sample: dict, function_library: dict) -> list[
         for pname, pinfo in params.items():
             if pinfo.get("required") and pname not in args:
                 default = pinfo.get("default", "")
-                if not (isinstance(default, str) and (default.strip() == "" or default == '""')):
-                    errs.append(f"ground_truth.calls[{ci}] missing required param {pname!r} for {func_name!r}")
+                if not (
+                    isinstance(default, str)
+                    and (default.strip() == "" or default == '""')
+                ):
+                    errs.append(
+                        f"ground_truth.calls[{ci}] missing required param {pname!r} for {func_name!r}"
+                    )
         for pname, pval in args.items():
             if pname not in params:
-                errs.append(f"ground_truth.calls[{ci}] unexpected param {pname!r} for {func_name!r}")
+                errs.append(
+                    f"ground_truth.calls[{ci}] unexpected param {pname!r} for {func_name!r}"
+                )
                 continue
             enum_vals = params[pname].get("enum")
             if enum_vals and isinstance(pval, str) and pval not in enum_vals:
@@ -189,12 +197,17 @@ def check_ground_truth_calls_args(sample: dict, function_library: dict) -> list[
 
 
 def check_function_name(sample: dict, function_library: dict) -> list[str]:
-    fname = sample.get("function_name")
-    if not isinstance(fname, str):
-        return [f"function_name is not a string: {type(fname).__name__}"]
-    if fname not in function_library:
-        return [f"function_name {fname!r} not found in function library"]
-    return []
+    errs = []
+    calls = sample.get("ground_truth", {}).get("calls", [])
+    for ci, call in enumerate(calls):
+        fname = call.get("function")
+        if not isinstance(fname, str) or not fname:
+            errs.append(f"ground_truth.calls[{ci}].function is missing or empty")
+        elif fname not in function_library:
+            errs.append(
+                f"ground_truth.calls[{ci}].function {fname!r} not found in function library"
+            )
+    return errs
 
 
 def check_retrieved_functions(sample: dict, function_library: dict) -> list[str]:
@@ -232,12 +245,18 @@ def check_retrieved_argument_values(sample: dict, argument_values: dict) -> list
                 continue
             for k in ARGVALUE_KEYS:
                 if k not in entry:
-                    errs.append(f"retrieved_argument_values.{pname}[{ei}] missing key {k!r}")
+                    errs.append(
+                        f"retrieved_argument_values.{pname}[{ei}] missing key {k!r}"
+                    )
             score = entry.get("score")
             if score is not None and not isinstance(score, (int, float)):
-                errs.append(f"retrieved_argument_values.{pname}[{ei}].score is not numeric: {type(score).__name__}")
+                errs.append(
+                    f"retrieved_argument_values.{pname}[{ei}].score is not numeric: {type(score).__name__}"
+                )
             elif isinstance(score, (int, float)) and not (0.0 <= score <= 1.0):
-                errs.append(f"retrieved_argument_values.{pname}[{ei}].score={score} out of range [0, 1]")
+                errs.append(
+                    f"retrieved_argument_values.{pname}[{ei}].score={score} out of range [0, 1]"
+                )
     return errs
 
 
@@ -254,7 +273,9 @@ def check_duplicate_ids(
             if not isinstance(sid, str):
                 continue
             if sid in seen:
-                errs.append(f"duplicate id {sid!r}: first in {seen[sid]}, also in {path}")
+                errs.append(
+                    f"duplicate id {sid!r}: first in {seen[sid]}, also in {path}"
+                )
             else:
                 seen[sid] = path
     return errs
@@ -284,6 +305,7 @@ def check_cross_split_function_leakage(
                 )
     return errs
 
+
 def check_calls_nonempty(sample: dict) -> list[str]:
     """Check that non-abstention samples have non-empty ground_truth.calls."""
     errs = []
@@ -302,7 +324,6 @@ def check_calls_nonempty(sample: dict) -> list[str]:
     return errs
 
 
-
 # ── Orchestration ───────────────────────────────────────────────────────
 
 
@@ -318,7 +339,14 @@ def validate_all(data_dir: str, output_path: str | None = None) -> dict:
     library_path = processed_dir / "function_library.json"
     arg_values_path = processed_dir / "argument_values.json"
 
-    for p in [train_path, test_path, train_schema_path, test_schema_path, library_path, arg_values_path]:
+    for p in [
+        train_path,
+        test_path,
+        train_schema_path,
+        test_schema_path,
+        library_path,
+        arg_values_path,
+    ]:
         if not p.exists():
             print(f"ERROR: {p} not found")
             sys.exit(1)
@@ -367,13 +395,9 @@ def validate_all(data_dir: str, output_path: str | None = None) -> dict:
             all_errors.extend(check_split(sample))
             all_errors.extend(check_ground_truth(sample))
             all_errors.extend(check_function_name(sample, function_library))
-            all_errors.extend(
-                check_ground_truth_calls_args(sample, function_library)
-            )
+            all_errors.extend(check_ground_truth_calls_args(sample, function_library))
             all_errors.extend(check_retrieved_functions(sample, function_library))
-            all_errors.extend(
-                check_retrieved_argument_values(sample, argument_values)
-            )
+            all_errors.extend(check_retrieved_argument_values(sample, argument_values))
             all_errors.extend(check_calls_nonempty(sample))
 
             if all_errors:

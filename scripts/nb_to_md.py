@@ -102,7 +102,9 @@ def format_output(output: dict) -> str | None:
     return text
 
 
-def convert_nb_to_md(notebook_path: str, output_path: str, include_outputs: bool = False) -> dict:
+def convert_nb_to_md(
+    notebook_path: str, output_path: str, include_outputs: bool = False
+) -> dict:
     """Convert a Jupyter notebook to markdown.
 
     Returns stats dict.

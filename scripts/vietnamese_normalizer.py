@@ -54,36 +54,38 @@ _VN_SYNONYMS: dict[str, str] = {
 }
 
 # Common Vietnamese stopwords (low-value for matching)
-_VN_STOPWORDS = frozenset({
-    "cua",
-    "va",
-    "la",
-    "o",
-    "tai",
-    "cho",
-    "voi",
-    "trong",
-    "tren",
-    "duoi",
-    "den",
-    "tu",
-    "bang",
-    "theo",
-    "ve",
-    "nhung",
-    "cac",
-    "mot",
-    "hai",
-    "ba",
-    "nam",
-    "thang",
-    "ngay",
-    "toi",
-    "can",
-    "xem",
-    "lay",
-    "tim",
-})
+_VN_STOPWORDS = frozenset(
+    {
+        "cua",
+        "va",
+        "la",
+        "o",
+        "tai",
+        "cho",
+        "voi",
+        "trong",
+        "tren",
+        "duoi",
+        "den",
+        "tu",
+        "bang",
+        "theo",
+        "ve",
+        "nhung",
+        "cac",
+        "mot",
+        "hai",
+        "ba",
+        "nam",
+        "thang",
+        "ngay",
+        "toi",
+        "can",
+        "xem",
+        "lay",
+        "tim",
+    }
+)
 
 
 @lru_cache(maxsize=8192)
@@ -112,9 +114,7 @@ def normalize_vietnamese(text: str) -> str:
     nfkd = unicodedata.normalize("NFKD", text)
 
     # Remove combining characters (diacritical marks)
-    stripped = "".join(
-        c for c in nfkd if not unicodedata.combining(c)
-    )
+    stripped = "".join(c for c in nfkd if not unicodedata.combining(c))
 
     # Remove non-alphanumeric except spaces
     cleaned = re.sub(r"[^\w\s]", " ", stripped)
@@ -145,9 +145,7 @@ def tokenize_meaningful(text_normalized: str, min_len: int = 2) -> set[str]:
     Extract meaningful tokens (skip stopwords and very short tokens).
     """
     tokens = text_normalized.split()
-    return {
-        t for t in tokens if len(t) >= min_len and t not in _VN_STOPWORDS
-    }
+    return {t for t in tokens if len(t) >= min_len and t not in _VN_STOPWORDS}
 
 
 def build_ngrams(text: str, n: int = 2) -> set[str]:

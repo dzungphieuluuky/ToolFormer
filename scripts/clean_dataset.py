@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-clean_dataset.py — Strict per-sample validation for toolformer dataset JSONL files.
+clean_dataset.py — Validate, standardise, and deduplicate toolformer JSONL datasets.
 
 Usage:
     python scripts/clean_dataset.py \\
@@ -14,7 +14,12 @@ Validates every sample against:
   - call count matches workflow type (1 / >=2 / 0)
   - every call has a known function name
   - every call's arguments match the function schema (keys, required params, enums, types)
-Drops invalid samples and writes a JSON report.
+
+Standardises every valid sample to the canonical schema:
+  - strips top-level function_name (legacy)
+  - strips workflow inside ground_truth (legacy)
+
+Drops invalid samples and writes a JSON report with detailed stats.
 
 stdlib only — no external dependencies.
 """
@@ -43,6 +48,18 @@ def _parse_ground_truth(gt: Any) -> dict | None:
     if not isinstance(gt, dict):
         return None
     return gt
+
+
+# ── Schema standardisation ────────────────────────────────────────────
+
+
+def _standardize_sample(sample: dict) -> dict:
+    """Strip legacy fields (function_name, ground_truth.workflow) in-place."""
+    sample.pop("function_name", None)
+    gt = sample.get("ground_truth")
+    if isinstance(gt, dict):
+        gt.pop("workflow", None)
+    return sample
 
 
 # ── Core validation ────────────────────────────────────────────────────
@@ -198,9 +215,9 @@ def clean_split(
             if len(stats["dropped_samples"][reason]) < 20:
                 stats["dropped_samples"][reason].append(sid)
 
-    # 5. Drop fields not needed by the training pipeline
+    # 5. Standardise schema (strip legacy fields)
     for s in valid:
-        s.pop("function_name", None)
+        _standardize_sample(s)
 
     # 6. Workflow distribution after filtering
     for s in valid:
@@ -289,8 +306,7 @@ def print_summary(stats: dict[str, Any]) -> None:
         print(f"    Workflow before: {dict(s['workflow_before'])}")
         print(f"    Workflow after:  {dict(s['workflow_after'])}")
 
-    print(f"\n  TOTAL: {grand_in} → {grand_out} "
-          f"(dropped {grand_in - grand_out})")
+    print(f"\n  TOTAL: {grand_in} → {grand_out} (dropped {grand_in - grand_out})")
     print()
 
 

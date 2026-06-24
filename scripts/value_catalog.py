@@ -41,9 +41,7 @@ class CatalogEntry:
 
     def __post_init__(self):
         self._norm_label = normalize_vietnamese(self.label)
-        self._norm_alt = (
-            normalize_vietnamese(self.alt_label) if self.alt_label else ""
-        )
+        self._norm_alt = normalize_vietnamese(self.alt_label) if self.alt_label else ""
         self._norm_code = normalize_vietnamese(self.code)
         # Combine all normalized forms for token matching
         all_text = f"{self._norm_label} {self._norm_alt}"
@@ -267,7 +265,9 @@ def load_catalog_from_json(
     return catalogs
 
 
-def raw_dict_to_catalogs(raw: dict[str, list[dict[str, Any]]]) -> dict[str, ValueCatalog]:
+def raw_dict_to_catalogs(
+    raw: dict[str, list[dict[str, Any]]],
+) -> dict[str, ValueCatalog]:
     """
     Convert a raw argument_values dict (loaded from JSON) into ValueCatalog objects.
 

@@ -44,9 +44,7 @@ def _safe_list(value: Any) -> list[str]:
     if isinstance(result, list):
         return result
     if isinstance(value, str):
-        return [
-            v.strip() for v in value.replace("\n", ",").split(",") if v.strip()
-        ]
+        return [v.strip() for v in value.replace("\n", ",").split(",") if v.strip()]
     return []
 
 

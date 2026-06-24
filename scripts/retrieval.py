@@ -225,9 +225,7 @@ class FunctionRetriever:
         top_k = np.argsort(scores)[-k:][::-1]
         return [self.func_names[i] for i in top_k]
 
-    def retrieve_with_scores(
-        self, query: str, k: int = 5
-    ) -> list[tuple[str, float]]:
+    def retrieve_with_scores(self, query: str, k: int = 5) -> list[tuple[str, float]]:
         scores = self._score(query)
         top_k = np.argsort(scores)[-k:][::-1]
         return [(self.func_names[i], float(scores[i])) for i in top_k]
@@ -395,9 +393,7 @@ class ArgumentValueRetriever:
                 param_con = constraints.get(param_name, {})
                 if "enum" in param_con:
                     result[param_name] = [
-                        ValueMatch(
-                            code=str(v), label=str(v), group="enum", score=1.0
-                        )
+                        ValueMatch(code=str(v), label=str(v), group="enum", score=1.0)
                         for v in param_con["enum"]
                     ]
                 continue

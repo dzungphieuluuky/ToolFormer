@@ -8,22 +8,26 @@ The generator reads two schema files:
   - function_schema_train.json  → functions used for training samples
   - function_schema_test.json   → functions held out for testing
 
-and produces train_dataset.jsonl + test_dataset.jsonl.
+and produces raw_train_dataset.jsonl + raw_test_dataset.jsonl.
 
 Workflow distribution (configurable, defaults):
   70%  single_call   – one function call answers the query
   20%  parallel      – multiple independent calls in one turn
   10%  abstention    – model should refuse / ask for more info
 
-Output format (per line):
+Output format (per line — all fields serialised via dataclass.asdict):
 {
+  "id": "<uuid>",
   "query": "...",
   "workflow_type": "single_call" | "parallel" | "abstention",
   "ground_truth": {
     "calls": [{"function": "...", "arguments": {...}}, ...],
     "reasoning": "...",
     "refusal_message": "..."   // only for abstention
-  }
+  },
+  "retrieved_functions": ["<func_name>", ...],
+  "retrieved_argument_values": {"<param>": [{"code": "...", "label": "...", ...}]},
+  "split": "train" | "test"
 }
 """
 
@@ -33,7 +37,9 @@ import json
 import logging
 import os
 import random
+import re
 import time
+import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
@@ -53,7 +59,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    )
     logger.addHandler(handler)
 
 # Silence tenacity logs unless needed
@@ -64,19 +72,24 @@ logging.getLogger("tenacity.retry").setLevel(logging.WARNING)
 # Data structures
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class DataSample:
     id: str
     query: str
     workflow_type: str
-    ground_truth: dict          # contains calls, reasoning, (optional) refusal_message
+    ground_truth: dict  # contains calls, reasoning, (optional) refusal_message
     retrieved_functions: list[str]  # simulated top‑k from library
-    split: str = "train"
+    retrieved_argument_values: dict = field(
+        default_factory=dict
+    )  # query-matched catalog entries
+    split: str = ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # API client factory
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 class _APIClient:
     """
@@ -100,6 +113,7 @@ class _APIClient:
     def _build_client(self, api_key: str, base_url: str | None):
         if self.provider == "openai":
             from openai import OpenAI
+
             kwargs = {"api_key": api_key}
             if base_url:
                 kwargs["base_url"] = base_url
@@ -107,6 +121,7 @@ class _APIClient:
 
         elif self.provider == "openrouter":
             from openai import OpenAI
+
             return OpenAI(
                 api_key=api_key,
                 base_url=base_url or "https://openrouter.ai/api/v1",
@@ -118,15 +133,18 @@ class _APIClient:
 
         elif self.provider == "anthropic":
             import anthropic
+
             return anthropic.Anthropic(api_key=api_key)
 
         elif self.provider == "google":
             import google.generativeai as genai
+
             genai.configure(api_key=api_key)
             return genai.GenerativeModel(self.model)
 
         elif self.provider == "together":
             from openai import OpenAI
+
             return OpenAI(
                 api_key=api_key,
                 base_url=base_url or "https://api.together.xyz/v1",
@@ -134,6 +152,7 @@ class _APIClient:
 
         elif self.provider == "mistral":
             from mistralai import Mistral
+
             return Mistral(api_key=api_key)
 
         else:
@@ -394,6 +413,7 @@ Rules:
 # Core generator
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 class TelcoDatasetGenerator:
     """
     Generates GRPO‑ready training samples from separate train/test schema files.
@@ -422,6 +442,7 @@ class TelcoDatasetGenerator:
         temperature: float = 0.9,
         max_tokens: int = 1024,
         seed: int = 42,
+        argument_values_path: str | None = None,
     ):
         self.train_library = train_function_library
         self.test_library = test_function_library
@@ -433,6 +454,36 @@ class TelcoDatasetGenerator:
         self.temperature = temperature
         self.max_tokens = max_tokens
         random.seed(seed)
+
+        # ── Load argument value catalog for enrichment ────────────────────────
+        self._catalog: dict[str, list[dict]] = {}
+        self._primary_catalog_keys: list[str] = []
+        if argument_values_path:
+            av_path = Path(argument_values_path)
+            if av_path.exists():
+                raw_catalog: dict[str, list[dict]] = json.loads(
+                    av_path.read_text(encoding="utf-8")
+                )
+                # Deduplicate alias keys (same entries → only keep the first key)
+                seen_entry_sets: set[int] = set()
+                for key, entries in raw_catalog.items():
+                    # fingerprint = hash of sorted codes
+                    codes = tuple(sorted(e.get("code", "") for e in entries))
+                    fp = hash(codes)
+                    if fp not in seen_entry_sets:
+                        seen_entry_sets.add(fp)
+                        self._catalog[key] = entries
+                        self._primary_catalog_keys.append(key)
+                if len(self._catalog) < len(raw_catalog):
+                    logger.info(
+                        f"Deduplicated catalog: {len(raw_catalog)} raw → {len(self._catalog)} primary keys"
+                    )
+                else:
+                    logger.info(
+                        f"Loaded argument values catalog: {len(self._catalog)} keys from {av_path}"
+                    )
+            else:
+                logger.warning(f"Argument values path not found: {av_path}")
 
         _key = (
             api_key
@@ -458,6 +509,7 @@ class TelcoDatasetGenerator:
         cls,
         train_schema_path: str,
         test_schema_path: str,
+        argument_values_path: str | None = "data/processed/argument_values.json",
         **kwargs,
     ) -> "TelcoDatasetGenerator":
         """Build generator from two separate schema JSON files."""
@@ -470,6 +522,7 @@ class TelcoDatasetGenerator:
         return cls(
             train_function_library=train_library,
             test_function_library=test_library,
+            argument_values_path=argument_values_path,
             **kwargs,
         )
 
@@ -483,9 +536,13 @@ class TelcoDatasetGenerator:
         test_schema = config.get("data", {}).get(
             "test_schema_path", "data/processed/function_schema_test.json"
         )
+        arg_values = config.get("data", {}).get(
+            "argument_values_path", "data/processed/argument_values.json"
+        )
         return cls.from_schemas(
             train_schema_path=train_schema,
             test_schema_path=test_schema,
+            argument_values_path=arg_values,
             provider=dg.get("provider", "openai"),
             model=dg.get("model", "gpt-4o-mini"),
             api_key=os.getenv(dg.get("api_key_env", "OPENAI_API_KEY")),
@@ -519,7 +576,9 @@ class TelcoDatasetGenerator:
         ───────
         (train_samples, test_samples)
         """
-        logger.info(f"Starting dataset generation: total={total}, train_split={train_split}")
+        logger.info(
+            f"Starting dataset generation: total={total}, train_split={train_split}"
+        )
         dist = workflow_distribution or {
             "single_call": 0.70,
             "parallel": 0.20,
@@ -541,44 +600,52 @@ class TelcoDatasetGenerator:
         logger.info(f"Workflow sample counts: {counts}")
 
         # ── 3. Generate samples per workflow ────────────────────────────────
-        all_samples: list[DataSample] = []
+        train_samples: list[DataSample] = []
         logger.info("Generating training‑pool samples...")
-        all_samples += self._generate_single_calls(
+        train_samples += self._generate_single_calls(
             counts["single_call"], train_funcs, split="train"
         )
-        all_samples += self._generate_parallel(
+        train_samples += self._generate_parallel(
             counts["parallel"], train_funcs, split="train"
         )
-        all_samples += self._generate_abstentions(
+        train_samples += self._generate_abstentions(
             counts["abstention"], train_funcs, split="train"
         )
 
         # ── 4. Generate test samples from held‑out functions ─────────────────
-        test_count = max(50, int(total * (1 - train_split)))
-        logger.info(f"Generating {test_count} test samples from held‑out functions...")
-        test_samples = self._generate_single_calls(test_count, test_funcs, split="test")
+        test_split = 1.0 - train_split
+        test_samples: list[DataSample] = []
+        logger.info("Generating test samples from held‑out functions...")
+        test_samples += self._generate_single_calls(
+            counts["single_call"] * test_split, test_funcs, split="test"
+        )
+        test_samples += self._generate_parallel(
+            counts["parallel"] * test_split, test_funcs, split="test"
+        )
+        test_samples += self._generate_abstentions(
+            counts["abstention"] * test_split, test_funcs, split="test"
+        )
 
         # ── 5. Assign splits + simulate retrieved functions ──────────────────
-        random.shuffle(all_samples)
-        train_cut = int(len(all_samples) * train_split)
-        train_samples = all_samples[:train_cut]
-        extra_test = all_samples[train_cut:]
-        test_samples = test_samples + extra_test
+        random.shuffle(train_samples)
+        random.shuffle(test_samples)
 
         for s in train_samples:
             s.split = "train"
         for s in test_samples:
             s.split = "test"
 
-        logger.info(f"Simulating retrieval for train ({len(train_samples)}) and test ({len(test_samples)}) samples...")
-        self._simulate_retrieval(train_samples, k=5)
-        self._simulate_retrieval(test_samples, k=5)
+        logger.info(
+            f"Simulating retrieval for train ({len(train_samples)}) and test ({len(test_samples)}) samples..."
+        )
+        self._simulate_retrieval(train_samples, k=10)
+        self._simulate_retrieval(test_samples, k=10)
 
-        # ── 6. Save ──────────────────────────────────────────────────────────
+        # ── 7. Save ──────────────────────────────────────────────────────────
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        train_path = out / "raw_train_dataset.jsonl"
-        test_path = out / "raw_test_dataset.jsonl"
+        train_path = out / "unenriched_train_dataset.jsonl"
+        test_path = out / "unenriched_test_dataset.jsonl"
         self._save_jsonl(train_samples, train_path)
         self._save_jsonl(test_samples, test_path)
 
@@ -773,7 +840,9 @@ class TelcoDatasetGenerator:
                     pass
             return []
 
-    def _parse_sample(self, raw: dict, expected_wf: str, split: str) -> DataSample | None:
+    def _parse_sample(
+        self, raw: dict, expected_wf: str, split: str
+    ) -> DataSample | None:
         """Parse a raw dictionary into a DataSample, enforcing the required format."""
         query = raw.get("query", "").strip()
         workflow_type = raw.get("workflow_type", expected_wf)
@@ -819,6 +888,7 @@ class TelcoDatasetGenerator:
             workflow_type=workflow_type,
             ground_truth=gt_out,
             retrieved_functions=[],
+            retrieved_argument_values={},
             split=split,
         )
 
@@ -838,19 +908,87 @@ class TelcoDatasetGenerator:
             random.shuffle(pool)
             s.retrieved_functions = pool[:k]
 
+    # ── argument value enrichment ─────────────────────────────────────────────
+
+    _VN_CHAR_MAP = {"đ": "d", "Đ": "D", "ơ": "o", "Ơ": "O", "ư": "u", "Ư": "U"}
+    _MULTI_SPACE = re.compile(r"\s+")
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """Vietnamese‑aware normalization: lowercase, strip diacritics, collapse spaces."""
+        text = text.lower()
+        for src, dst in TelcoDatasetGenerator._VN_CHAR_MAP.items():
+            text = text.replace(src, dst)
+        nfkd = unicodedata.normalize("NFKD", text)
+        stripped = "".join(c for c in nfkd if not unicodedata.combining(c))
+        cleaned = re.sub(r"[^\w\s]", " ", stripped)
+        return TelcoDatasetGenerator._MULTI_SPACE.sub(" ", cleaned).strip()
+
+    def _enrich_argument_values(self, sample: DataSample) -> None:
+        """Populate retrieved_argument_values by matching catalog entries against the query."""
+        if not self._catalog:
+            sample.retrieved_argument_values = {}
+            return
+
+        q_norm = self._normalize_text(sample.query)
+        q_tokens = set(q_norm.split())
+
+        matched: dict[str, list[dict]] = {}
+        for catalog_key in self._primary_catalog_keys:
+            entries = self._catalog[catalog_key]
+            scored: list[tuple[float, dict]] = []
+            for entry in entries:
+                code_norm = self._normalize_text(entry.get("code", ""))
+                label_norm = self._normalize_text(entry.get("label", ""))
+                alt_norm = self._normalize_text(entry.get("alt_label", ""))
+
+                score = 0.0
+                # Priority 1: code appears verbatim in query
+                if len(code_norm) >= 2 and code_norm in q_norm:
+                    specificity = min(1.0, len(entry.get("code", "")) / 5.0)
+                    score = 0.85 + 0.15 * specificity
+                # Priority 2: full label substring
+                elif label_norm and label_norm in q_norm:
+                    score = 0.95
+                # Priority 3: alt_label substring
+                elif alt_norm and alt_norm in q_norm:
+                    score = 0.90
+                # Priority 4: token overlap
+                elif label_norm:
+                    label_tokens = set(label_norm.split())
+                    overlap = q_tokens & label_tokens
+                    if overlap:
+                        coverage = len(overlap) / max(len(label_tokens), 1)
+                        score = min(0.70, 0.25 + 0.45 * coverage)
+
+                if score > 0.0:
+                    scored.append(
+                        (
+                            score,
+                            {
+                                "code": entry.get("code", ""),
+                                "label": entry.get("label", ""),
+                                "group": entry.get("group", ""),
+                                "score": round(score, 2),
+                                "alt_label": entry.get("alt_label", ""),
+                            },
+                        )
+                    )
+
+            if scored:
+                scored.sort(key=lambda x: -x[0])
+                matched[catalog_key] = [s[1] for s in scored[:5]]
+
+        sample.retrieved_argument_values = matched
+
     # ── I/O helpers ───────────────────────────────────────────────────────────
 
     @staticmethod
     def _save_jsonl(samples: list[DataSample], path: Path) -> None:
-        """Save samples in the required schema (query, workflow_type, ground_truth)."""
+        """Save samples with all fields serialised via asdict."""
         with open(path, "w", encoding="utf-8") as fh:
             for s in samples:
-                out = {
-                    "query": s.query,
-                    "workflow_type": s.workflow_type,
-                    "ground_truth": s.ground_truth,
-                }
-                fh.write(json.dumps(out, ensure_ascii=False) + "\n")
+                fh.write(json.dumps(asdict(s), ensure_ascii=False) + "\n")
         logger.info(f"Saved {len(samples)} samples to {path}")
 
     def _rate_limit_wait(self, n_calls: int) -> None:
@@ -872,6 +1010,7 @@ if __name__ == "__main__":
     generator = TelcoDatasetGenerator.from_schemas(
         train_schema_path="data/processed/function_schema_train.json",
         test_schema_path="data/processed/function_schema_test.json",
+        argument_values_path="data/processed/argument_values.json",
         provider="openai",
         model="gpt-4o-mini",
     )

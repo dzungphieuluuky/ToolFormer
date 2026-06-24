@@ -59,7 +59,10 @@ def load_jsonl(path: Path) -> list[dict]:
             try:
                 samples.append(json.loads(line))
             except json.JSONDecodeError as e:
-                print(f"WARNING: {path}:{lineno} malformed JSON — skipping: {e}", file=sys.stderr)
+                print(
+                    f"WARNING: {path}:{lineno} malformed JSON — skipping: {e}",
+                    file=sys.stderr,
+                )
     return samples
 
 
@@ -93,9 +96,15 @@ def inspect_all(data_dir: str) -> int:
     if train_samples is None or test_samples is None:
         return 1
     if function_library is None:
-        print("WARNING: function_library.json not found — skipping function-related stats", file=sys.stderr)
+        print(
+            "WARNING: function_library.json not found — skipping function-related stats",
+            file=sys.stderr,
+        )
     if argument_values is None:
-        print("WARNING: argument_values.json not found — skipping arg-value coverage", file=sys.stderr)
+        print(
+            "WARNING: argument_values.json not found — skipping arg-value coverage",
+            file=sys.stderr,
+        )
 
     test_only_funcs: set[str] = set()
     all_funcs: set[str] = set()
@@ -152,7 +161,11 @@ def inspect_all(data_dir: str) -> int:
         # Functions used but not in library
         if function_library:
             for fn in fn_counts:
-                if fn not in all_funcs and fn not in ("<missing>", "<missing_function_name>", "<unknown>"):
+                if fn not in all_funcs and fn not in (
+                    "<missing>",
+                    "<missing_function_name>",
+                    "<unknown>",
+                ):
                     print(f"    {fn:35s}: {fn_counts[fn]:5d}  (NOT IN LIBRARY)")
 
     # ── 4. Ground truth call stats ─────────────────────────────────────
@@ -190,8 +203,12 @@ def inspect_all(data_dir: str) -> int:
             continue
         with_vals = sum(1 for s in samples if s.get("retrieved_argument_values"))
         print(f"  [{split_name}]")
-        print(f"    With arg values:     {with_vals:5d}  ({100.0*with_vals/len(samples):5.1f}%)")
-        print(f"    Without arg values:  {len(samples)-with_vals:5d}  ({100.0*(len(samples)-with_vals)/len(samples):5.1f}%)")
+        print(
+            f"    With arg values:     {with_vals:5d}  ({100.0 * with_vals / len(samples):5.1f}%)"
+        )
+        print(
+            f"    Without arg values:  {len(samples) - with_vals:5d}  ({100.0 * (len(samples) - with_vals) / len(samples):5.1f}%)"
+        )
 
     # ── 6. Data quality warnings ───────────────────────────────────────
     print_section("6. Data quality warnings")
@@ -209,7 +226,9 @@ def inspect_all(data_dir: str) -> int:
                 error_count += 1
         if error_count > 0:
             has_warnings = True
-            print(f"  [ERROR] {split_name}: {error_count} non-abstention samples with empty ground_truth.calls")
+            print(
+                f"  [ERROR] {split_name}: {error_count} non-abstention samples with empty ground_truth.calls"
+            )
 
     # 6b. Cross-split: train samples using test-only functions
     if test_only_funcs:
@@ -225,7 +244,9 @@ def inspect_all(data_dir: str) -> int:
                         leak_count += 1
             if leak_count > 0:
                 has_warnings = True
-                print(f"  [WARNING] {split_name}: {leak_count} calls to test-only functions ({', '.join(sorted(seen))})")
+                print(
+                    f"  [WARNING] {split_name}: {leak_count} calls to test-only functions ({', '.join(sorted(seen))})"
+                )
             else:
                 print(f"  [OK] {split_name}: no cross-split function leakage")
 
@@ -236,7 +257,9 @@ def inspect_all(data_dir: str) -> int:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Inspect toolformer dataset statistics")
+    parser = argparse.ArgumentParser(
+        description="Inspect toolformer dataset statistics"
+    )
     parser.add_argument(
         "--data-dir",
         default="data/processed",
