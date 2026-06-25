@@ -407,6 +407,47 @@ Rules:
 - Return **only** the JSON array, no extra text.
 """
 
+_FAILURE_TEMPLATE = """\
+Given a telecom network query, the correct function call, confusable function candidates, and available argument values, generate 4 plausible WRONG responses that a model could produce.
+
+ORIGINAL QUERY:
+"{query}"
+
+GOLD FUNCTION (correct function for this query):
+{schema}
+
+CONFUSABLE FUNCTIONS (similar functions the model might mistakenly select):
+{confusable_fns}
+
+AVAILABLE ARGUMENT VALUES FROM CATALOG (for generating realistic but incorrect values):
+{catalog_context}
+
+Generate exactly 4 failure samples — one of each type:
+
+1. "wrong_function" — Use a confusable function from the list above instead of the gold function. Keep argument values plausible for the wrong function.
+2. "wrong_value" — Use the correct gold function but with a wrong argument value (e.g., wrong location_code, wrong tech_type, wrong data_level). Pick a value from the catalog that is semantically plausible but incorrect.
+3. "missing_arg" — Use the correct gold function but omit a non-required optional parameter that the query implies.
+4. "hallucinated_arg" — Use the correct gold function but include an invented parameter that does NOT exist in the schema. The parameter name should sound telecom-plausible.
+
+Respond with a JSON array of exactly 4 objects, each with this structure:
+{{
+  "failure_type": "<wrong_function|wrong_value|missing_arg|hallucinated_arg>",
+  "tool_call": {{
+    "function": "<function_name>",
+    "arguments": {{ <param>: <value>, ... }}
+  }},
+  "reasoning": "<brief explanation in Vietnamese of what the model did wrong>"
+}}
+
+Rules:
+- Use function names from the confusable functions list for "wrong_function"
+- Use catalog values for "wrong_value" — realistic but intentionally incorrect
+- For "missing_arg", only omit non-required parameters
+- For "hallucinated_arg", invent a parameter name NOT present in the gold schema
+- The reasoning must be in Vietnamese
+- Return **only** the JSON array, no extra text.
+"""
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Core generator
@@ -789,6 +830,33 @@ class TelcoDatasetGenerator:
         prompt = _ABSTENTION_TEMPLATE.format(
             schemas=self._schemas_str(func_names),
             n=n,
+        )
+        text = self.client.complete(
+            SYSTEM_PROMPT, prompt, self.temperature, self.max_tokens
+        )
+        return self._parse_json_list(text)
+
+    def _call_failure(self, gold_sample: dict) -> list[dict]:
+        gold_fn_name = gold_sample["ground_truth"]["calls"][0]["function"]
+        schema = self._schema_str(gold_fn_name)
+        query = gold_sample["query"]
+        confusable = gold_sample.get("retrieved_functions", [])
+        confusable_str = "\n".join(f"- {fn}" for fn in confusable) if confusable else "None"
+
+        catalog_parts = []
+        for param_name, entries in gold_sample.get("retrieved_argument_values", {}).items():
+            vals = ", ".join(
+                f'{e.get("code", "")} ({e.get("label", "")})'
+                for e in entries[:5]
+            )
+            catalog_parts.append(f"- {param_name}: {vals}")
+        catalog_str = "\n".join(catalog_parts) if catalog_parts else "None available"
+
+        prompt = _FAILURE_TEMPLATE.format(
+            query=query,
+            schema=schema,
+            confusable_fns=confusable_str,
+            catalog_context=catalog_str,
         )
         text = self.client.complete(
             SYSTEM_PROMPT, prompt, self.temperature, self.max_tokens
