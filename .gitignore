@@ -1,6 +1,5 @@
 .omo/
-.opencode/
-*opencode.json
+*opencode*
 *tui.json
 
 
