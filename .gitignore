@@ -1,7 +1,10 @@
 .omo/
 *opencode*
+*openagent*
 *tui.json
-
+data/
+unsloth*
+*.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
