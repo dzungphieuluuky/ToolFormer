@@ -149,6 +149,22 @@ class _APIClient:
                 base_url=base_url or "https://api.together.xyz/v1",
             )
 
+        elif self.provider == "cerebras":
+            from openai import OpenAI
+
+            return OpenAI(
+                api_key=api_key,
+                base_url=base_url or "https://api.cerebras.ai/v1",
+            )
+
+        elif self.provider == "groq":
+            from openai import OpenAI
+
+            return OpenAI(
+                api_key=api_key,
+                base_url=base_url or "https://api.groq.com/openai/v1",
+            )
+
         elif self.provider == "mistral":
             from mistralai import Mistral
 
@@ -172,7 +188,7 @@ class _APIClient:
     ) -> str:
         """Single chat completion — returns assistant text."""
         try:
-            if self.provider in ("openai", "together", "openrouter"):
+            if self.provider in ("openai", "together", "openrouter", "cerebras", "groq"):
                 resp = self._client.chat.completions.create(
                     model=self.model,
                     messages=[

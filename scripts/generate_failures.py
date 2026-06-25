@@ -13,10 +13,18 @@ Usage:
         --input data/generated/v1.0/train_dataset_cleaned.jsonl \\
         --output data/generated/v1.0/failures_dataset.jsonl \\
         --failures-per-sample 1 \\
-        --provider openrouter \\
-        --model openai/gpt-oss-120b:free \\
-        --workers 8 \\
-        --dry-run
+    --provider openrouter \\
+    --model openai/gpt-oss-120b:free \\
+    --workers 8 \\
+    --dry-run
+
+    python scripts/generate_failures.py \\
+        --provider cerebras \\
+        --model llama4-scout-17b-16e-instruct
+
+    python scripts/generate_failures.py \\
+        --provider groq \\
+        --model llama-4-scout-17b-16e-instruct
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ import os
 import random
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -83,6 +92,51 @@ HALLUCINATED_PARAMS = [
     "encryption_type",
     "protocol_version",
 ]
+
+# ── Token bucket rate limiter ──────────────────────────────────────────────────
+
+
+class TokenBucket:
+    """Thread-safe token bucket rate limiter for pacing Tier 1 LLM calls.
+
+    Maintains a budget of tokens that refills continuously at a fixed rate.
+    Workers call ``acquire()`` before making an API call — if the bucket is
+    empty the caller blocks until a token becomes available.  This paces
+    requests in **real time** across all threads, unlike a post-hoc sleep.
+
+    The bucket can accumulate up to ``rate_per_minute`` tokens (one minute of
+    burst capacity), so short bursts within the limit are allowed while the
+    long-term average is enforced.
+    """
+
+    def __init__(self, rate_per_minute: float) -> None:
+        self._rate_per_sec = rate_per_minute / 60.0
+        self._tokens = 0.0
+        self._max_tokens = float(rate_per_minute)
+        self._last_refill = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        """Block until a token is available."""
+        if self._rate_per_sec <= 0:
+            return  # No rate limit
+        while True:
+            with self._lock:
+                self._refill()
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+                # Time until one token is available
+                wait = (1.0 - self._tokens) / self._rate_per_sec
+            # Sleep outside the lock so other threads can refill concurrently
+            time.sleep(max(wait, 0.001))
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(self._max_tokens, self._tokens + elapsed * self._rate_per_sec)
+        self._last_refill = now
+
 
 HALLUCINATED_VALUES = [
     "high",
@@ -365,6 +419,7 @@ def _process_sample(
     catalog: dict,
     failures_per_sample: int,
     tier1_generator: Any | None,
+    rate_limiter: TokenBucket | None = None,
 ) -> list[dict]:
     gold_calls = sample.get("ground_truth", {}).get("calls", [])
     if not gold_calls:
@@ -377,21 +432,13 @@ def _process_sample(
     tier1_pool: list[dict] = []
     if tier1_generator is not None:
         try:
+            if rate_limiter is not None:
+                rate_limiter.acquire()
             raw = tier1_generator._call_failure(sample)
             if isinstance(raw, list):
                 tier1_pool = [f for f in raw if _validate_failure_record(f)]
-            else:
-                logger.debug(
-                    "Tier 1 returned non-list for sample %s: %s",
-                    sample.get("id", "?"),
-                    type(raw).__name__,
-                )
-        except Exception as exc:
-            logger.debug(
-                "Tier 1 LLM failure for sample %s: %s",
-                sample.get("id", "?"),
-                exc,
-            )
+        except Exception:
+            pass  # Tier 1 LLM call failed — will rely on Tier 2/3 fallback
 
     for failure in tier1_pool[:failures_per_sample]:
         results.append(_build_record(sample, failure))
@@ -516,7 +563,7 @@ def generate_failures(
                 )
         except Exception as exc:
             logger.warning(
-                "Tier 1 init failed: %s. Falling back to Tier 2/3.", exc
+                "Tier 1 LLM init failed — falling back to Tier 2/3 heuristics only."
             )
 
     # ── Dry run ────────────────────────────────────────────────────────
@@ -543,6 +590,17 @@ def generate_failures(
     all_records: list[dict] = []
     records_lock = threading.Lock()
 
+    # ── Create rate limiter ──────────────────────────────────────────────
+    rate_limiter: TokenBucket | None = (
+        TokenBucket(requests_per_minute) if requests_per_minute > 0 else None
+    )
+    if rate_limiter is not None:
+        logger.info(
+            "Rate limiter: %d req/min (burst up to %d tokens)",
+            requests_per_minute,
+            requests_per_minute,
+        )
+
     def _worker(sample: dict) -> list[dict]:
         fn_library = (
             test_function_library
@@ -550,7 +608,8 @@ def generate_failures(
             else train_function_library
         )
         return _process_sample(
-            sample, fn_library, catalog, failures_per_sample, tier1_generator
+            sample, fn_library, catalog, failures_per_sample, tier1_generator,
+            rate_limiter,
         )
 
     if max_workers <= 1:
@@ -574,7 +633,7 @@ def generate_failures(
                             len(records) if records else failures_per_sample
                         )
                 except Exception as exc:
-                    logger.warning("Worker error: %s", exc)
+                    logger.warning("A worker thread encountered an error — check sample data for compatibility.")
                     if progress:
                         progress.update(failures_per_sample)
 
@@ -618,7 +677,7 @@ def main() -> None:
     parser.add_argument(
         "--provider",
         default="openrouter",
-        help="LLM provider for Tier 1",
+        help="LLM provider for Tier 1 (openrouter, openai, cerebras, groq, together, anthropic, google, mistral)",
     )
     parser.add_argument(
         "--model",
