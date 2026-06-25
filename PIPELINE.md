@@ -65,7 +65,7 @@ ValueCatalog:
 | File | Contents |
 |------|----------|
 | `train_dataset.jsonl` | 3293 training samples with pre-computed retrievals |
-| `test_dataset.jsonl` | 1907 test samples (includes 5 held-out functions) |
+| `test_dataset_cleaned.jsonl` | 1907 test samples (includes 5 held-out functions) |
 | `raw_train/test_dataset.jsonl` | Pre-enrichment generator output |
 
 **Dataset schema per JSONL line:**
@@ -411,7 +411,7 @@ config/
 data/
   processed/
     train_dataset.jsonl              ← 3293 training samples
-    test_dataset.jsonl               ← 1907 test samples
+    test_dataset_cleaned.jsonl               ← 1907 test samples
     function_schema_train.json       ← Function defs (train split)
     function_schema_test.json        ← 5 held-out function defs (test)
     function_library.json            ← Combined function library

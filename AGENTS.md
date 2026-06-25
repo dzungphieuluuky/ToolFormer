@@ -28,13 +28,13 @@ The notebook is environment-aware and auto-detects:
 ```
 data/processed/
   train_dataset.jsonl         3293 samples — what trainers load
-  test_dataset.jsonl          1907 samples — what evaluation loads
+  test_dataset_cleaned.jsonl          1907 samples — what evaluation loads
   function_schema_train.json   Function defs for training (train split)
   function_schema_test.json    5 held-out function defs for test
   function_library.json        Combined train + test function library
   argument_values.json         Value catalog for retrieval enrichment
   raw_train_dataset.jsonl      Pre-enrichment generator output (optional)
-  raw_test_dataset.jsonl       Pre-enrichment generator output (optional)
+  raw_test_dataset_cleaned.jsonl       Pre-enrichment generator output (optional)
   retrieval_index/             BM25/hybrid search index (optional at train time)
 ```
 
@@ -49,7 +49,7 @@ Data pipeline order (historical, all done):
 
 ## Dataset Schema
 
-`train_dataset.jsonl` / `test_dataset.jsonl` — each line a JSON object:
+`train_dataset.jsonl` / `test_dataset_cleaned.jsonl` — each line a JSON object:
 
 | Field | Type | Notes |
 |---|---|---|
