@@ -723,8 +723,8 @@ class TelcoDatasetGenerator:
         for s in test_samples:
             s.split = "test"
 
-        self._simulate_retrieval(train_samples, k=10)
-        self._simulate_retrieval(test_samples, k=10)
+        self._simulate_retrieval(train_samples, k=5)
+        self._simulate_retrieval(test_samples, k=5)
 
         # ── 7. Save ──────────────────────────────────────────────────────────
         out = Path(output_dir)
