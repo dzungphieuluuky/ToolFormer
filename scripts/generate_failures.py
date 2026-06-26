@@ -134,7 +134,9 @@ class TokenBucket:
     def _refill(self) -> None:
         now = time.monotonic()
         elapsed = now - self._last_refill
-        self._tokens = min(self._max_tokens, self._tokens + elapsed * self._rate_per_sec)
+        self._tokens = min(
+            self._max_tokens, self._tokens + elapsed * self._rate_per_sec
+        )
         self._last_refill = now
 
 
@@ -267,9 +269,7 @@ def _h_missing_arg(
     params = schema.get("parameters", {})
 
     non_required = [
-        k
-        for k, v in params.items()
-        if not v.get("required", True) and k in gold_args
+        k for k, v in params.items() if not v.get("required", True) and k in gold_args
     ]
     if not non_required:
         return None
@@ -505,9 +505,7 @@ def generate_failures(
     )
 
     catalog = _load_json(catalog_path)
-    logger.info(
-        "Argument catalog: %d param keys from %s", len(catalog), catalog_path
-    )
+    logger.info("Argument catalog: %d param keys from %s", len(catalog), catalog_path)
 
     # ── Filter out abstention ──────────────────────────────────────────
     non_abstention: list[dict] = []
@@ -520,9 +518,7 @@ def generate_failures(
             continue
         non_abstention.append(s)
 
-    logger.info(
-        "Non-abstention samples: %d (skipped %d)", len(non_abstention), skipped
-    )
+    logger.info("Non-abstention samples: %d (skipped %d)", len(non_abstention), skipped)
 
     if not non_abstention:
         logger.warning("No non-abstention samples to process. Exiting.")
@@ -608,7 +604,11 @@ def generate_failures(
             else train_function_library
         )
         return _process_sample(
-            sample, fn_library, catalog, failures_per_sample, tier1_generator,
+            sample,
+            fn_library,
+            catalog,
+            failures_per_sample,
+            tier1_generator,
             rate_limiter,
         )
 
@@ -620,9 +620,7 @@ def generate_failures(
                 progress.update(len(records) if records else failures_per_sample)
     else:
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [
-                pool.submit(_worker, sample) for sample in non_abstention
-            ]
+            futures = [pool.submit(_worker, sample) for sample in non_abstention]
             for fut in as_completed(futures):
                 try:
                     records = fut.result()
@@ -633,7 +631,9 @@ def generate_failures(
                             len(records) if records else failures_per_sample
                         )
                 except Exception as exc:
-                    logger.warning("A worker thread encountered an error — check sample data for compatibility.")
+                    logger.warning(
+                        "A worker thread encountered an error — check sample data for compatibility."
+                    )
                     if progress:
                         progress.update(failures_per_sample)
 

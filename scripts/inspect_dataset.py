@@ -105,7 +105,9 @@ def inspect_all(data_dir: str) -> int:
             "WARNING: argument_values.json not found — skipping arg-value coverage",
             file=sys.stderr,
         )
-    print(f"Loaded {len(train_samples)} train samples, {len(test_samples)} test samples")
+    print(
+        f"Loaded {len(train_samples)} train samples, {len(test_samples)} test samples"
+    )
     print(f"Loaded train samples from {data_path / 'train_dataset_cleaned.jsonl'}")
     print(f"Loaded test samples from {data_path / 'test_dataset_cleaned.jsonl'}")
 

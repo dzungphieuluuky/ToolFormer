@@ -1,6 +1,10 @@
 # scripts/ — Data Pipeline
 
-Standalone Python entry points for the ToolFormer data pipeline (generation, enrichment, validation, retrieval). All scripts can be run independently; the notebook at root can also call equivalent logic inline.
+**Generated:** 2026-06-26
+**Branch:** main
+**Commit:** 25a20d1
+
+Standalone CLI data pipeline tools for the ToolFormer project (generation, enrichment, validation, retrieval). All scripts run independently — the notebook at root does **not** import or depend on any of them at runtime (it loads only pre-built datasets from `data/generated/`).
 
 ## Pipeline Order
 
@@ -50,3 +54,4 @@ python scripts/inspect_dataset.py data/generated/v1.0/train_dataset_cleaned.json
 - Config loaded via OmegaConf from `config/` YAMLs.
 - Logging via Python logging (`logging.getLogger()`).
 - No test framework, no type annotations enforced.
+- Data produced under `data/generated/v1.0/` (v2.0 copy exists but not referenced by notebook).

@@ -299,7 +299,9 @@ def main():
     logger.info(f"Argument catalog: {len(argument_values)} parameter types")
 
     # ── Step 3: Build retrieval index ─────────────────────────────────────────
-    index_dir = data_cfg.get("retrieval_index_dir", "data/generated/v1.0/retrieval_index")
+    index_dir = data_cfg.get(
+        "retrieval_index_dir", "data/generated/v1.0/retrieval_index"
+    )
     func_retriever = FunctionRetriever(
         function_library=full_library,
         method=ret_cfg.get("method", "hybrid"),
@@ -375,7 +377,9 @@ def main():
         final_train_path = data_cfg.get(
             "train_path", "data/generated/v1.0/train_dataset.jsonl"
         )
-        final_test_path = data_cfg.get("test_path", "data/generated/v1.0/test_dataset.jsonl")
+        final_test_path = data_cfg.get(
+            "test_path", "data/generated/v1.0/test_dataset.jsonl"
+        )
 
     if not args.skip_enrichment:
         val_retriever = ArgumentValueRetriever(
@@ -419,6 +423,7 @@ def main():
             logger.warning(f"{label} file not found: {path}")
             continue
         import jsonlines as _jl
+
         n = sum(1 for _ in _jl.open(path))
         logger.info(f"Done — {label}: {n} samples → {path}")
 

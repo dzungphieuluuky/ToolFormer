@@ -188,7 +188,13 @@ class _APIClient:
     ) -> str:
         """Single chat completion — returns assistant text."""
         try:
-            if self.provider in ("openai", "together", "openrouter", "cerebras", "groq"):
+            if self.provider in (
+                "openai",
+                "together",
+                "openrouter",
+                "cerebras",
+                "groq",
+            ):
                 resp = self._client.chat.completions.create(
                     model=self.model,
                     messages=[
@@ -535,9 +541,7 @@ class TelcoDatasetGenerator:
                         f"Argument catalog: {len(raw_catalog)} raw → {len(self._catalog)} deduplicated keys"
                     )
                 else:
-                    logger.info(
-                        f"Argument catalog: {len(self._catalog)} keys"
-                    )
+                    logger.info(f"Argument catalog: {len(self._catalog)} keys")
             else:
                 logger.warning(f"Argument values path not found: {av_path}")
 
@@ -658,12 +662,48 @@ class TelcoDatasetGenerator:
         test_samples: list[DataSample] = []
 
         stages = [
-            ("single_call (train)", train_funcs, counts["single_call"], "train", self._generate_single_calls),
-            ("parallel (train)",    train_funcs, counts["parallel"],    "train", self._generate_parallel),
-            ("abstention (train)",  train_funcs, counts["abstention"],  "train", self._generate_abstentions),
-            ("single_call (test)",  test_funcs,  int(counts["single_call"] * test_split), "test",  self._generate_single_calls),
-            ("parallel (test)",     test_funcs,  int(counts["parallel"] * test_split),    "test",  self._generate_parallel),
-            ("abstention (test)",   test_funcs,  int(counts["abstention"] * test_split),  "test",  self._generate_abstentions),
+            (
+                "single_call (train)",
+                train_funcs,
+                counts["single_call"],
+                "train",
+                self._generate_single_calls,
+            ),
+            (
+                "parallel (train)",
+                train_funcs,
+                counts["parallel"],
+                "train",
+                self._generate_parallel,
+            ),
+            (
+                "abstention (train)",
+                train_funcs,
+                counts["abstention"],
+                "train",
+                self._generate_abstentions,
+            ),
+            (
+                "single_call (test)",
+                test_funcs,
+                int(counts["single_call"] * test_split),
+                "test",
+                self._generate_single_calls,
+            ),
+            (
+                "parallel (test)",
+                test_funcs,
+                int(counts["parallel"] * test_split),
+                "test",
+                self._generate_parallel,
+            ),
+            (
+                "abstention (test)",
+                test_funcs,
+                int(counts["abstention"] * test_split),
+                "test",
+                self._generate_abstentions,
+            ),
         ]
 
         with tqdm(total=total, desc="Generating", unit="sample", leave=True) as pbar:
@@ -740,7 +780,10 @@ class TelcoDatasetGenerator:
         return samples
 
     def _generate_parallel(
-        self, count: int, func_pool: list[str], split: str = "train",
+        self,
+        count: int,
+        func_pool: list[str],
+        split: str = "train",
         pbar: tqdm | None = None,
     ) -> list[DataSample]:
         """Generate parallel multi‑call samples."""
@@ -774,7 +817,10 @@ class TelcoDatasetGenerator:
         return samples
 
     def _generate_abstentions(
-        self, count: int, func_pool: list[str], split: str = "train",
+        self,
+        count: int,
+        func_pool: list[str],
+        split: str = "train",
         pbar: tqdm | None = None,
     ) -> list[DataSample]:
         """Generate refusal / abstention samples."""
@@ -857,13 +903,16 @@ class TelcoDatasetGenerator:
         schema = self._schema_str(gold_fn_name)
         query = gold_sample["query"]
         confusable = gold_sample.get("retrieved_functions", [])
-        confusable_str = "\n".join(f"- {fn}" for fn in confusable) if confusable else "None"
+        confusable_str = (
+            "\n".join(f"- {fn}" for fn in confusable) if confusable else "None"
+        )
 
         catalog_parts = []
-        for param_name, entries in gold_sample.get("retrieved_argument_values", {}).items():
+        for param_name, entries in gold_sample.get(
+            "retrieved_argument_values", {}
+        ).items():
             vals = ", ".join(
-                f'{e.get("code", "")} ({e.get("label", "")})'
-                for e in entries[:5]
+                f"{e.get('code', '')} ({e.get('label', '')})" for e in entries[:5]
             )
             catalog_parts.append(f"- {param_name}: {vals}")
         catalog_str = "\n".join(catalog_parts) if catalog_parts else "None available"

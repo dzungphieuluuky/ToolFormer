@@ -41,6 +41,7 @@ def binary_reward_to_token(reward: int) -> str:
 
 # ── Chat template (replicates Jinja WITHOUT tokenizer, from cell 23) ──
 
+
 def apply_chat_template(
     messages: list[dict[str, str]],
     add_generation_prompt: bool = False,
@@ -106,6 +107,7 @@ STRICT RULES:
 
 # ── Ground truth normalization (from cell 20/23) ──────────────────────
 
+
 def normalize_ground_truth(gt: Any) -> dict:
     if not isinstance(gt, dict):
         return {}
@@ -126,6 +128,7 @@ def normalize_ground_truth(gt: Any) -> dict:
 
 
 # ── Prompt building helpers (from cell 23) ────────────────────────────
+
 
 def build_function_description(func_name: str, schema: dict) -> str:
     lines = [f"### {func_name}"]
@@ -150,13 +153,12 @@ def build_function_description(func_name: str, schema: dict) -> str:
                 lines.append(f"  - {pname}: {pinfo}")
     if constraints:
         other_con = {
-            k: v for k, v in constraints.items()
+            k: v
+            for k, v in constraints.items()
             if not (isinstance(v, dict) and list(v.keys()) == ["enum"])
         }
         if other_con:
-            lines.append(
-                f"Constraints: {json.dumps(other_con, ensure_ascii=False)}"
-            )
+            lines.append(f"Constraints: {json.dumps(other_con, ensure_ascii=False)}")
     return "\n".join(lines)
 
 
@@ -210,9 +212,7 @@ def build_retriever_block(
                     label_str = label
                     if alt_label:
                         label_str += f" / {alt_label}"
-                    val_lines.append(
-                        f"  - {code} \u2192 {label_str}  [{group}]"
-                    )
+                    val_lines.append(f"  - {code} \u2192 {label_str}  [{group}]")
                 else:
                     val_lines.append(f"  - {m}")
         if len(val_lines) > 1:
@@ -278,6 +278,7 @@ def build_messages_for_sft(
 
 # ── Build gold assistant response text ────────────────────────────────
 
+
 def build_gold_response(ground_truth: dict) -> str:
     gt = normalize_ground_truth(ground_truth)
     calls = gt.get("calls", [])
@@ -292,11 +293,15 @@ def build_gold_response(ground_truth: dict) -> str:
         )
         call_blocks.append(f"<tool_call>\n{c_json}\n</tool_call>")
     calls_str = "\n".join(call_blocks)
-    reasoning = gt.get("reasoning", "Analysing the query to determine the correct function and arguments.")
+    reasoning = gt.get(
+        "reasoning",
+        "Analysing the query to determine the correct function and arguments.",
+    )
     return f"<reasoning>\n{reasoning}\n</reasoning>\n{calls_str}"
 
 
 # ── Trajectory dataclass (from cell 21) ───────────────────────────────
+
 
 @dataclass
 class Trajectory:
@@ -310,6 +315,7 @@ class Trajectory:
 
 
 # ── Build failure response text ───────────────────────────────────────
+
 
 def build_failure_response(failure_gt: dict) -> str:
     gt = normalize_ground_truth(failure_gt)
@@ -325,11 +331,15 @@ def build_failure_response(failure_gt: dict) -> str:
         )
         call_blocks.append(f"<tool_call>\n{c_json}\n</tool_call>")
     calls_str = "\n".join(call_blocks)
-    reasoning = gt.get("reasoning", "Analyzing the query to determine the correct function and arguments.")
+    reasoning = gt.get(
+        "reasoning",
+        "Analyzing the query to determine the correct function and arguments.",
+    )
     return f"<reasoning>\n{reasoning}\n</reasoning>\n{calls_str}"
 
 
 # ── I/O helpers ───────────────────────────────────────────────────────
+
 
 def load_jsonl(path: str) -> list[dict]:
     samples: list[dict] = []
@@ -355,6 +365,7 @@ def write_jsonl(path: str, records: list[dict]) -> None:
 
 
 # ── Dataset builders ──────────────────────────────────────────────────
+
 
 def build_sft_dataset(
     samples: list[dict],
@@ -389,16 +400,16 @@ def build_grpo_dataset(
             gt = {}
         gt = normalize_ground_truth(gt)
         arg_vals = argument_values or sample.get("retrieved_argument_values")
-        messages = build_messages_for_grpo(
-            query, retrieved, function_library, arg_vals
-        )
+        messages = build_messages_for_grpo(query, retrieved, function_library, arg_vals)
         prompt = apply_chat_template(messages, add_generation_prompt=True)
-        records.append({
-            "prompt": prompt,
-            "ground_truth": json.dumps(gt, ensure_ascii=False),
-            "query": query,
-            "workflow_type": sample.get("workflow_type", "single_call"),
-        })
+        records.append(
+            {
+                "prompt": prompt,
+                "ground_truth": json.dumps(gt, ensure_ascii=False),
+                "query": query,
+                "workflow_type": sample.get("workflow_type", "single_call"),
+            }
+        )
     return records
 
 
@@ -463,6 +474,7 @@ def build_rctp_dataset(
 
 # ── Validation ────────────────────────────────────────────────────────
 
+
 def validate_sft(records: list[dict], expected_count: int) -> list[str]:
     errs = []
     if len(records) != expected_count:
@@ -506,8 +518,14 @@ def validate_rctp(records: list[Trajectory], min_count: int) -> list[str]:
     if not rewards:
         errs.append("rctp: no records")
     elif rewards != {0, 1}:
-        wt = f"only reward={list(rewards)[0]}" if len(rewards) == 1 else f"rewards={rewards}"
-        logger.warning("rctp: records contain %s (no failure samples matched to gold by id)", wt)
+        wt = (
+            f"only reward={list(rewards)[0]}"
+            if len(rewards) == 1
+            else f"rewards={rewards}"
+        )
+        logger.warning(
+            "rctp: records contain %s (no failure samples matched to gold by id)", wt
+        )
     for i, t in enumerate(records):
         if not t.prompt_messages:
             errs.append(f"rctp[{i}]: empty prompt_messages")
@@ -521,6 +539,7 @@ def validate_rctp(records: list[Trajectory], min_count: int) -> list[str]:
 
 
 # ── Main ──────────────────────────────────────────────────────────────
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -650,7 +669,9 @@ def main() -> None:
         n_failure = len(rctp_trajectories) - n_success
         logger.info(
             "RCTP dataset: %d records (reward=1: %d, reward=0: %d)",
-            len(rctp_trajectories), n_success, n_failure,
+            len(rctp_trajectories),
+            n_success,
+            n_failure,
         )
 
     if errs:
