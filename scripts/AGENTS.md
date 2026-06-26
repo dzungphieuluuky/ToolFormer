@@ -5,11 +5,13 @@ Standalone Python entry points for the ToolFormer data pipeline (generation, enr
 ## Pipeline Order
 
 1. **Schema** → `prepare_data.py` orchestrates everything: parses Excel or loads function schema, splits train/test, builds retrieval index, generates synthetic data, enriches with argument values.
-2. **Generate** → `data_generator.py` prompts an LLM API for synthetic (query, ground_truth) pairs. Configurable workflow distribution (single_call 65%, parallel 25%, abstention 10%).
+2. **Generate gold** → `data_generator.py` prompts an LLM API for synthetic (query, ground_truth) pairs. Configurable workflow distribution (single_call 65%, parallel 25%, abstention 10%).
 3. **Validate** → `validate_dataset.py` runs quality checks (enum violations, missing args, schema conformance). Produces `*_cleaned.jsonl` (~11% dropped).
 4. **Clean** → `clean_dataset.py` batch-fixes or filters common dataset issues.
-5. **Retrieve** → `retrieval.py` provides `FunctionRetriever` (BM25/hybrid, Vietnamese-aware) and `ArgumentValueRetriever`.
-6. **Enrich** → `value_catalog.py` builds argument value catalogs; `vietnamese_normalizer.py` provides Vietnamese text normalization for retrieval.
+5. **Generate failures** → `generate_failures.py` creates failure trajectories (three-tier: LLM / heuristic / legacy). Produces `failures_dataset.jsonl`.
+6. **Build training datasets** → `build_datasets.py` consumes gold + failures to build `sft_dataset.jsonl`, `grpo_dataset.jsonl`, `rcgrpo_dataset.jsonl`, `rctp_dataset.jsonl`.
+7. **Retrieve** → `retrieval.py` provides `FunctionRetriever` (BM25/hybrid, Vietnamese-aware) and `ArgumentValueRetriever`.
+8. **Enrich** → `value_catalog.py` builds argument value catalogs; `vietnamese_normalizer.py` provides Vietnamese text normalization for retrieval.
 
 ## Utilities
 
@@ -36,6 +38,8 @@ python scripts/inspect_dataset.py data/generated/v1.0/train_dataset_cleaned.json
 | Generate synthetic samples | `data_generator.py` |
 | Validate/clean dataset | `validate_dataset.py`, `clean_dataset.py` |
 | Build retrieval index | `retrieval.py` |
+| Build training datasets | `build_datasets.py` |
+| Generate failures | `generate_failures.py` |
 | Parse functions from Excel | `excel_parser.py` |
 | Inspect dataset stats | `inspect_dataset.py` |
 | Prepare data (end-to-end) | `prepare_data.py` |
@@ -44,5 +48,5 @@ python scripts/inspect_dataset.py data/generated/v1.0/train_dataset_cleaned.json
 
 - All scripts import via `sys.path.insert(0, ...)` to resolve project root.
 - Config loaded via OmegaConf from `config/` YAMLs.
-- Logging via `src.utils.logging_utils.get_logger()`.
+- Logging via Python logging (`logging.getLogger()`).
 - No test framework, no type annotations enforced.

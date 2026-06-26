@@ -694,7 +694,7 @@ def main() -> None:
     parser.add_argument(
         "--rpm",
         type=int,
-        default=500,
+        default=50,
         dest="requests_per_minute",
         help="Requests per minute for Tier 1 LLM calls",
     )
