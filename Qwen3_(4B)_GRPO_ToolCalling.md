@@ -2858,6 +2858,7 @@ def evaluate_model_vllm(
     model, tokenizer = load_model(
         adapter_model_path=model_path,
         mode="inference",
+        fast_inference=True,
         env_name=ENV_NAME,
     )
 
@@ -2957,6 +2958,7 @@ def evaluate_model(
     model, tokenizer = load_model(
         adapter_model_path=model_path,
         mode="inference",
+        fast_inference=True,
         env_name=ENV_NAME,
     )
 
