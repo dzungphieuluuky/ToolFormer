@@ -3206,27 +3206,6 @@ else:
 # ===================== Load model & register reward tokens =====================
 # Resolve output directory from active MODE
 MODE_OUTPUT_DIR = TRAIN_CONFIG["training"]["output_dir"]
-model, tokenizer = load_model(
-    base_model_name=TRAIN_CONFIG["model"]["name"],
-    max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
-    load_in_4bit=TRAIN_CONFIG["model"].get("load_in_4bit", True),
-    fast_inference=False,
-    adapter_model_path=None,
-    mode="train",
-    lora_rank=TRAIN_CONFIG["lora"]["r"],
-    lora_target_modules=TRAIN_CONFIG["lora"]["target_modules"],
-    lora_dropout=TRAIN_CONFIG["lora"].get("lora_dropout", 0.0),
-    env_name=ENV_NAME,
-)
-print("Model and tokenizer loaded.")
-
-print("Tokenizer special tokens:")
-print(f"  bos_token: {tokenizer.bos_token}")
-print(f"  eos_token: {tokenizer.eos_token}")
-print(f"  pad_token: {tokenizer.pad_token}")
-print(f"  additional_special_tokens: {tokenizer.additional_special_tokens}")
-
-
 
 ```
 
@@ -3276,6 +3255,25 @@ if MODE == "sft":
     print("\n" + "=" * 70)
     print("SFT: Supervised Fine-Tuning on expert demonstrations")
     print("=" * 70)
+    model, tokenizer = load_model(
+        base_model_name=TRAIN_CONFIG["model"]["name"],
+        max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
+        load_in_4bit=TRAIN_CONFIG["model"].get("load_in_4bit", True),
+        fast_inference=False,
+        adapter_model_path=None,
+        mode="train",
+        lora_rank=TRAIN_CONFIG["lora"]["r"],
+        lora_target_modules=TRAIN_CONFIG["lora"]["target_modules"],
+        lora_dropout=TRAIN_CONFIG["lora"].get("lora_dropout", 0.0),
+        env_name=ENV_NAME,
+    )
+    print("Model and tokenizer loaded.")
+
+    print("Tokenizer special tokens:")
+    print(f"  bos_token: {tokenizer.bos_token}")
+    print(f"  eos_token: {tokenizer.eos_token}")
+    print(f"  pad_token: {tokenizer.pad_token}")
+    print(f"  additional_special_tokens: {tokenizer.additional_special_tokens}")
 
     sft_cfg = TRAIN_CONFIG["sft"]
     raw_records = load_jsonl(TRAIN_CONFIG["data"]["sft_path"])
@@ -3360,6 +3358,25 @@ if MODE == "rctp_ft":
     print("\n" + "=" * 70)
     print("STAGE 1: Reward-Conditioned Trajectory Policy (RCTP) Fine-tuning")
     print("=" * 70)
+    model, tokenizer = load_model(
+        base_model_name=TRAIN_CONFIG["model"]["name"],
+        max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
+        load_in_4bit=TRAIN_CONFIG["model"].get("load_in_4bit", True),
+        fast_inference=False,
+        adapter_model_path=None,
+        mode="train",
+        lora_rank=TRAIN_CONFIG["lora"]["r"],
+        lora_target_modules=TRAIN_CONFIG["lora"]["target_modules"],
+        lora_dropout=TRAIN_CONFIG["lora"].get("lora_dropout", 0.0),
+        env_name=ENV_NAME,
+    )
+    print("Model and tokenizer loaded.")
+
+    print("Tokenizer special tokens:")
+    print(f"  bos_token: {tokenizer.bos_token}")
+    print(f"  eos_token: {tokenizer.eos_token}")
+    print(f"  pad_token: {tokenizer.pad_token}")
+    print(f"  additional_special_tokens: {tokenizer.additional_special_tokens}")
 
     rctp_cfg = TRAIN_CONFIG["rctp_ft"]
 
@@ -3514,6 +3531,12 @@ if MODE in ("grpo", "rc_grpo"):
         load_in_4bit=False,
         env_name=ENV_NAME,
     )
+    print("Model and tokenizer loaded.")
+    print("Tokenizer special tokens:")
+    print(f"  bos_token: {tokenizer.bos_token}")
+    print(f"  eos_token: {tokenizer.eos_token}")
+    print(f"  pad_token: {tokenizer.pad_token}")
+    print(f"  additional_special_tokens: {tokenizer.additional_special_tokens}")
 
     from datasets import Dataset
     dataset = Dataset.from_list(load_jsonl(TRAIN_CONFIG["data"]["grpo_path"]))
@@ -3594,7 +3617,7 @@ if ENV_NAME == "colab":
     print(f"[Colab] Downloading model {COLAB_EVAL_MODEL_ID} -> {MODE_OUTPUT_DIR}")
     snapshot_download(
         repo_id=COLAB_EVAL_MODEL_ID,
-        local_dir=MODE_OUTPUT_DIR,
+        local_dir=BASE_OUTPUT_PATH,
         local_dir_use_symlinks=False,
         token=os.environ.get("HF_TOKEN"),
     )
