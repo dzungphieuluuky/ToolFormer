@@ -3489,9 +3489,9 @@ FileLink("outputs/rctp_ft_model.zip")
 ```
 
 ```python
-os.environ["UNSLOTH_VLLM_STANDBY"] = "1"  # [NEW] Extra 30% context lengths!
 if MODE in ("grpo", "rc_grpo"):
     # ===================== STAGE 2: RC-GRPO (or vanilla GRPO baseline) =====================
+    os.environ["UNSLOTH_VLLM_STANDBY"] = "1"  # vLLM standby mode — shares GPU with trainer
     print("\n" + "=" * 70)
     print(f"STAGE 2: {'RC-GRPO' if MODE == 'rc_grpo' else 'Vanilla GRPO baseline'}")
     print("=" * 70)
@@ -3568,6 +3568,20 @@ if MODE in ("grpo", "rc_grpo"):
 else:
     print(f"Skipping Stage 2 (MODE={MODE}).")
 
+```
+
+```python
+# ── Free training model to avoid vLLM duplicate-layer crash ──
+# vLLM cannot have two fast_inference engines in one process.
+# Delete the training model + clear CUDA cache before loading eval model.
+# Also give eval vLLM full GPU memory (training model is gone).
+import gc
+if 'model' in dir():
+    del model
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+os.environ["UNSLOTH_VLLM_STANDBY"] = "1"  # eval load_model reads this → 0.8
 ```
 
 ```python
