@@ -45,7 +45,7 @@ try:
         BASE_DATA_PATH = "/kaggle/input/"
         BASE_OUTPUT_PATH = "/kaggle/working/"
         DATA_MOUNT = "/kaggle/input/datasets/dzung271828/toolformer-data/generated/v1.0_k5"
-        KAGGLE_WHEEL_DIR = "/kaggle/input/datasets/dzung271828/telco-wheels/telco-wheels"
+        KAGGLE_WHEEL_DIR = "/kaggle/input/datasets/dzung271828/telco-wheels/telco-wheels/telco-wheels"
         print("Environment: Kaggle")
         print("Will use pip --no-index --find-links (offline mode)")
         # Prevent HF from trying to download
@@ -176,10 +176,11 @@ _pkgs = "jsonlines openpyxl pandas tabulate seaborn matplotlib tenacity tqdm ran
 if IS_T4_GPU:
     !uv pip install {_pkgs}
 else:
-    !pip install --no-index --find-links=/kaggle/input/datasets/dzung271828/telco-wheels/telco-wheels {_pkgs}
+    !pip install --no-index --find-links=/kaggle/input/datasets/dzung271828/telco-wheels/telco-wheels/telco-wheels {_pkgs}
 
-# Optional: install flash-attn for faster inference (may require CUDA)
-!pip install flash-attn --no-build-isolation
+# Kaggle: install pre-downloaded torch + flash-attn + einops (Blackwell wheels)
+if ENV_NAME == "kaggle":
+    !pip install --no-index --find-links=/kaggle/input/datasets/dzung271828/telco-wheels/rtx6000-flash-attn-wheels/rtx6000-flash-attn-wheels torch flash-attn einops
 
 ```
 
