@@ -2529,6 +2529,7 @@ def load_model(
     lora_target_modules: list[str] | None = None,
     lora_dropout: float = 0.0,
     env_name: str = "local",
+    gpu_memory_utilization: float | None = None,
 ) -> tuple:
     """
     Unified model loader: load a base model with optional LoRA adapter.
@@ -2582,7 +2583,7 @@ def load_model(
         load_in_4bit=load_in_4bit,
         fast_inference=fast_inference,
         dtype=None,
-        gpu_memory_utilization=0.3 if os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1" else 0.8,
+        gpu_memory_utilization=gpu_memory_utilization if gpu_memory_utilization is not None else (0.3 if os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1" else 0.8),
     )
     if adapter_model_path is None and not fast_inference and mode == "train":
         kwargs["max_lora_rank"] = lora_rank
@@ -2683,7 +2684,7 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig
         # full max_seq_length (8192), saving VRAM for training activations.
         vllm_max_model_length=data_cfg.get("max_prompt_length", 3584) + data_cfg.get("max_completion_length", 256),
         # Tight vLLM memory fraction — training model needs more now with batch=2, seq=4096.
-        vllm_gpu_memory_utilization=0.5,
+        vllm_gpu_memory_utilization=0.6,
         # Offload vLLM KV cache to CPU during optimizer steps (frees VRAM).
         vllm_enable_sleep_mode=True,
         max_steps=train_cfg.get("max_steps", 500),
@@ -2859,6 +2860,7 @@ def evaluate_model_vllm(
         adapter_model_path=model_path,
         mode="inference",
         fast_inference=True,
+        gpu_memory_utilization=0.85,
         env_name=ENV_NAME,
     )
 
@@ -2903,6 +2905,7 @@ def evaluate_model_vllm(
         max_tokens=max_new_tokens,
         stop=["</tool_call>"],
         include_stop_str_in_output=True,
+        seed=3407,
     )
 
     # Create vLLM LLM from the same model
@@ -2959,6 +2962,7 @@ def evaluate_model(
         adapter_model_path=model_path,
         mode="inference",
         fast_inference=True,
+        gpu_memory_utilization=0.85,
         env_name=ENV_NAME,
     )
 
@@ -3164,7 +3168,7 @@ TRAIN_CONFIG = {
         "max_prompt_length": 7680,
         "max_completion_length": 512,
         "include_all_threshold": 5,
-        "eval_batch_size": 32,
+        "eval_batch_size": 16,
     },
     "grpo": {
         "temperature": 1.0,
@@ -3625,7 +3629,7 @@ if ENV_NAME == "colab":
 
 ```python
 # ===================== EVALUATION =====================
-os.environ["UNSLOTH_VLLM_STANDBY"] = "1"  # eval load_model reads this → 0.8
+os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval load_model reads this → 0.8
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
     retriever = FunctionRetriever(function_library, method="hybrid")
@@ -3692,8 +3696,11 @@ else:
 ```
 
 ```python
-del model
-del tokenizer
+try:
+    del model
+    del tokenizer
+except:
+    pass
 import gc
 gc.collect()
 torch.cuda.empty_cache()
