@@ -178,8 +178,7 @@ Contains the telecom operations assistant prompt with:
 
 ```python
 def load_model(config):
-    # 1. PatchFastRL("GRPO", FastLanguageModel)  — required for GRPO training
-    # 2. FastLanguageModel.from_pretrained(...)    — load 4-bit base model
+    # 1. FastLanguageModel.from_pretrained(...)    — load 4-bit base model (fast_inference handles GRPO patching)
     # 3. FastLanguageModel.get_peft_model(...)     — attach LoRA adapters
     # 4. patch_tokenizer_for_custom_roles(...)     — register reward tokens
     # 5. model.resize_token_embeddings(...)        — resize for new tokens
@@ -189,7 +188,7 @@ def load_model(config):
 
 | Parameter | Value |
 |-----------|-------|
-| Base model | `unsloth/Qwen3-4B-unsloth-bnb-4bit` |
+| Base model | `unsloth/Qwen3-4B-Instruct-2507` |
 | Max seq length | 2048 |
 | 4-bit | Yes (bnb, pre-quantized) |
 | LoRA rank | 32 (configurable, TRAIN_CONFIG) |
@@ -363,7 +362,7 @@ Output: tabulated results + generated report.
 ```python
 def load_model_for_inference(
     model_path: str,
-    base_model_name: str = "unsloth/Qwen3-4B-unsloth-bnb-4bit",
+    base_model_name: str = "unsloth/Qwen3-4B-Instruct-2507",
     max_seq_length: int = 2048,
     load_in_4bit: bool = True,
 ):
