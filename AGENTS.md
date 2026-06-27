@@ -130,6 +130,7 @@ Each script runs standalone. See `scripts/AGENTS.md` for details.
 - Data is generated in `data/generated/v1.0/`; training runs output to `outputs/{mode}_model/`
 - The `smart_truncate()` function exists as legacy (preserved, disabled) — 8192 max_seq_len fits all samples with compact per-sample argument values
 - `vllm_enable_sleep_mode=True` is used in `GRPOConfig` to share GPU with the main model
+- On Colab, the eval cell downloads the model from HF Hub (`dzungpham/telecom-toolcaller`) into `MODE_OUTPUT_DIR` via `snapshot_download` before loading it. Kaggle and local are unaffected.
 
 ## Quick verification commands
 
