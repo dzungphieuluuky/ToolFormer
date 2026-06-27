@@ -377,7 +377,7 @@ def build_sft_dataset(
         query = sample["query"]
         retrieved = sample.get("retrieved_functions", [])
         gt = sample.get("ground_truth", {})
-        arg_vals = argument_values or sample.get("retrieved_argument_values")
+        arg_vals = sample.get("retrieved_argument_values") or argument_values
         messages = build_messages_for_sft(
             query, retrieved, function_library, gt, arg_vals
         )
@@ -399,7 +399,7 @@ def build_grpo_dataset(
         if not isinstance(gt, dict):
             gt = {}
         gt = normalize_ground_truth(gt)
-        arg_vals = argument_values or sample.get("retrieved_argument_values")
+        arg_vals = sample.get("retrieved_argument_values") or argument_values
         messages = build_messages_for_grpo(query, retrieved, function_library, arg_vals)
         prompt = apply_chat_template(messages, add_generation_prompt=True)
         records.append(
@@ -434,7 +434,7 @@ def build_rctp_dataset(
         gt = normalize_ground_truth(sample.get("ground_truth", {}))
         gold_calls = gt.get("calls", [])
 
-        arg_vals = argument_values or sample.get("retrieved_argument_values")
+        arg_vals = sample.get("retrieved_argument_values") or argument_values
         prompt_messages = build_messages_for_grpo(
             query, retrieved, function_library, arg_vals
         )
