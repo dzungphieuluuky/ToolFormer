@@ -3344,6 +3344,8 @@ if MODE == "sft":
 
 ```python
 !zip -r outputs/sft_model.zip outputs/sft_model
+from IPython.display import FileLink
+FileLink("outputs/sft_model.zip")
 ```
 
 ```python
@@ -3469,6 +3471,12 @@ if MODE == "rctp_ft":
 ```
 
 ```python
+!zip -r outputs/rctp_ft_model.zip outputs/rctp_ft_model
+from IPython.display import FileLink
+FileLink("outputs/rctp_ft_model.zip")
+```
+
+```python
 # ===================== Unified model loader for Stage 2 =====================
 # Loads a base model with a fine-tuned LoRA adapter for inference or training,
 # controlled by the `mode` argument.  Named parameters base_model_path /
@@ -3551,6 +3559,9 @@ if MODE in ("grpo", "rc_grpo"):
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
     print(f"Model saved to {output_dir}")
+    !zip -r {output_dir}.zip {output_dir}
+    from IPython.display import FileLink
+    FileLink(f"{output_dir}.zip")
 else:
     print(f"Skipping Stage 2 (MODE={MODE}).")
 
@@ -3615,6 +3626,9 @@ if Path(test_dataset_path).exists():
     print(f"\nEvaluation Benchmark \u2014 {MODE}")
     print(tabulate(rows, headers=["Metric", "Value"], tablefmt="grid"))
     generate_report([eval_result])
+    !zip -r {MODE_OUTPUT_DIR}.zip {MODE_OUTPUT_DIR}
+    from IPython.display import FileLink
+    FileLink(f"{MODE_OUTPUT_DIR}.zip")
 else:
     print("Test dataset not found; skipping evaluation.")
 

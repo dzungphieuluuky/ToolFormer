@@ -1,8 +1,8 @@
 # scripts/ — Data Pipeline
 
-**Generated:** 2026-06-26
+**Generated:** 2026-06-27
 **Branch:** main
-**Commit:** 6ebbb3e
+**Commit:** edb1444e
 
 Standalone CLI data pipeline tools for the ToolFormer project (generation, enrichment, validation, retrieval). All scripts run independently — the notebook at root does **not** import or depend on any of them at runtime (it loads only pre-built datasets from `data/generated/`).
 
@@ -25,6 +25,9 @@ Standalone CLI data pipeline tools for the ToolFormer project (generation, enric
 | `inspect_dataset.py` | 274 | CLI inspection and stats for JSONL datasets |
 | `nb_to_md.py` | 233 | Convert Jupyter notebook to research-writeup Markdown |
 | `prepare_data.py` | 427 | **Main orchestrator** — calls all other scripts |
+| `vietnamese_normalizer.py` | 106 | Vietnamese text normalization for retrieval |
+| `rerank_functions.py` | 148 | Cross-encoder reranking of retrieved functions |
+| `verify_token_counts.py` | 97 | Verify dataset token counts against model limits |
 
 ## Running
 
@@ -42,6 +45,8 @@ python scripts/inspect_dataset.py data/generated/v1.0/train_dataset_cleaned.json
 | Generate synthetic samples | `data_generator.py` |
 | Validate/clean dataset | `validate_dataset.py`, `clean_dataset.py` |
 | Build retrieval index | `retrieval.py` |
+| Rerank retrieved functions | `rerank_functions.py` |
+| Verify token counts | `verify_token_counts.py` |
 | Build training datasets | `build_datasets.py` |
 | Generate failures | `generate_failures.py` |
 | Parse functions from Excel | `excel_parser.py` |

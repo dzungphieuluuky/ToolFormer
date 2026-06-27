@@ -1,10 +1,12 @@
 # ToolFormer — Agent Guide
 
-**Updated:** 2026-06-27 — End of session with unified `load_model()`
+**Updated:** 2026-06-27 — fixed `max_prompt_length` truncation, added `DATASET.md`
+**Commit:** `edb1444e` on `main`
 
 Telecom tool-calling RL project: fine-tuning Qwen3-4B on function calling using RC-GRPO (Reward-Conditioned GRPO). Built on Unsloth + TRL. Pure research — no tests, no linter, no type checker, no CI, no git hooks.
 
 Codegraph is **indexed** — use `codegraph_explore` before reading source files.
+`DATASET.md` at root documents dataset v1.0_k5 — token stats, workflow distributions, retrieval figures.
 
 ## Entrypoints
 
@@ -14,7 +16,8 @@ Codegraph is **indexed** — use `codegraph_explore` before reading source files
 | `scripts/` | Standalone CLI data pipeline. Each script runs independently. Notebook loads pre-built datasets only. |
 | `config/*.yaml` | Reference only. Notebook's hardcoded `TRAIN_CONFIG` dict wins when they diverge. |
 | `PIPELINE.md` | Architectural walkthrough of the notebook. Reference for details not covered here. |
-| `README.md` | **Stale** — references `run_awpo.py` / `run_gvpo.py` / `run_sft.py` / `run_rc_grpo.py` that were never implemented. Ignore it. |
+| `DATASET.md` | Dataset inventory, token statistics, workflow distributions, function retrieval breakdowns. |
+| `README.md` | **Stale** — references scripts that were never implemented. Ignore it. |
 
 ## Quick start
 
@@ -42,7 +45,7 @@ Secrets (optional): `OPENROUTER_API_KEY`, `WANDB_API_KEY`, `HF_TOKEN`.
 | `grpo` | `GRPOTrainer` | `grpo_dataset.jsonl` | Vanilla GRPO baseline |
 | `rc_grpo` | `RCGRPOTrainer` | `rcgrpo_dataset.jsonl` | Stage 2: RC-GRPO (RL with reward-token conditioning) |
 
-Only SFT has trained weights: `outputs/sft_model/checkpoint-1335/`. GVPO / RC-GRPO directories exist but are empty.
+Only SFT has trained weights: `outputs/sft_model/checkpoint-1335/`. GRPO / RC-GRPO directories exist but are empty. No other entrypoints for training exist.
 
 ## Model config (`TRAIN_CONFIG` in notebook — source of truth)
 
@@ -97,7 +100,10 @@ SamplingParams(
 ```
 
 ### Data paths
-`TRAIN_CONFIG["data"]` points to `data/generated/v1.0/`. `v1.0_k5/` (top-5 functions, per-sample argument values) and `v2.0/` copies exist but are not referenced by the notebook.
+`TRAIN_CONFIG["data"]` points to `data/generated/v1.0/`. The active dataset is `v1.0_k5/` (top-5 functions, per-sample argument values, 31 telecom functions, 3553 train / 2075 test records). A `data/generated/v2.0/` copy exists but is not referenced by the notebook. See `DATASET.md` for full inventory and token statistics.
+
+### Prompt truncation fix (2026-06-27)
+`max_prompt_length` raised from 3584 to **7680** (and `max_completion_length` from 256 to **512**), eliminating the 9.9% truncation rate for GRPO prompts. `vllm_max_model_length` set to 8192 (matches `max_seq_length`). Zero prompts now exceed limits (max actual: 5476 tokens).
 
 ### `src/utils/logging_utils.py`
 Exists but **not used** by the notebook (inline logging instead).
@@ -131,6 +137,7 @@ Each script runs standalone. See `scripts/AGENTS.md` for details.
 grep "vllm_gpu_memory_utilization" Qwen3_(4B)_GRPO_ToolCalling.ipynb
 ls outputs/*/                            # check training outputs
 ls data/generated/v1.0/*.jsonl | head   # check dataset files
+cat DATASET.md                           # dataset inventory
 python scripts/build_datasets.py --input-base data/generated/v1.0/train_dataset_cleaned.jsonl
 python scripts/validate_dataset.py --input data/generated/v1.0/train_dataset.jsonl
 python scripts/inspect_dataset.py data/generated/v1.0/train_dataset_cleaned.jsonl
