@@ -3569,6 +3569,23 @@ else:
 ```
 
 ```python
+# ── Colab eval: download model from Hugging Face Hub to MODE_OUTPUT_DIR ──
+# The HF_TOKEN secret must be set in Colab secrets for private repos.
+COLAB_EVAL_MODEL_ID = "dzungpham/telecom-toolcaller"
+if ENV_NAME == "colab":
+    from huggingface_hub import snapshot_download
+    os.makedirs(MODE_OUTPUT_DIR, exist_ok=True)
+    print(f"[Colab] Downloading model {COLAB_EVAL_MODEL_ID} -> {MODE_OUTPUT_DIR}")
+    snapshot_download(
+        repo_id=COLAB_EVAL_MODEL_ID,
+        local_dir=MODE_OUTPUT_DIR,
+        local_dir_use_symlinks=False,
+        token=os.environ.get("HF_TOKEN"),
+    )
+    print("[Colab] Download complete.")
+```
+
+```python
 # ===================== EVALUATION =====================
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
