@@ -3616,7 +3616,7 @@ if ENV_NAME == "colab":
     print(f"[Colab] Downloading model {COLAB_EVAL_MODEL_ID} -> {MODE_OUTPUT_DIR}")
     snapshot_download(
         repo_id=COLAB_EVAL_MODEL_ID,
-        local_dir=BASE_OUTPUT_PATH,
+        local_dir=f"{BASE_OUTPUT_PATH}/outputs/",
         local_dir_use_symlinks=False,
         token=os.environ.get("HF_TOKEN"),
     )
