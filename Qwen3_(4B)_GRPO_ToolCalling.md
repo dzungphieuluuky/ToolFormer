@@ -3604,7 +3604,6 @@ if 'model' in dir():
     gc.collect()
     torch.cuda.empty_cache()
     torch.cuda.synchronize()
-os.environ["UNSLOTH_VLLM_STANDBY"] = "1"  # eval load_model reads this → 0.8
 ```
 
 ```python
@@ -3626,6 +3625,7 @@ if ENV_NAME == "colab":
 
 ```python
 # ===================== EVALUATION =====================
+os.environ["UNSLOTH_VLLM_STANDBY"] = "1"  # eval load_model reads this → 0.8
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
     retriever = FunctionRetriever(function_library, method="hybrid")
