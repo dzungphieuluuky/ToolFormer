@@ -2830,119 +2830,6 @@ def estimate_cost(prompt: str, response: str, price_per_1k_tokens: float = 0.000
     tokens_est = total_chars / 1.3
     return (tokens_est / 1000) * price_per_1k_tokens
 
-def evaluate_model_vllm(
-    model_path: str,
-    test_dataset_path: str,
-    function_library: dict,
-    retriever: FunctionRetriever,
-    sandbox: Sandbox,
-    top_k: int = 5,
-    max_new_tokens: int = 512,
-    model_name_tag: str = "model",
-    use_dataset_retrieval: bool = True,
-    argument_values: dict | None = None,
-    condition_on_high_reward: bool = True,
-    batch_size: int = 32,
-) -> dict:
-    """
-    Batched evaluation using vLLM for ~10x speedup over serial HF generate.
-
-    Loads model with fast_inference=True, uses vLLM's LLM.generate() with
-    continuous batching. Returns same metrics dict as evaluate_model().
-    """
-    logger = get_logger(__name__)
-    logger.info(f"[vLLM-Bench] Loading model from {model_path}")
-
-    from vllm import LLM, SamplingParams
-
-    # Load with fast_inference=True for vLLM backend
-    model, tokenizer = load_model(
-        adapter_model_path=model_path,
-        mode="inference",
-        fast_inference=True,
-        gpu_memory_utilization=0.85,
-        env_name=ENV_NAME,
-    )
-
-    val_retriever = None
-    if argument_values is not None:
-        val_retriever = ArgumentValueRetriever(argument_values)
-
-    test_samples = []
-    with jsonlines.open(test_dataset_path) as reader:
-        for obj in reader:
-            test_samples.append(obj)
-
-    logger.info(f"[vLLM-Bench] {model_name_tag}: evaluating {len(test_samples)} samples (batch_size={batch_size})")
-
-    # Build all prompts first
-    prompts = []
-    sample_metas = []
-    for sample in test_samples:
-        query = sample["query"]
-        gt = sample.get("ground_truth", {})
-        if use_dataset_retrieval and sample.get("retrieved_functions"):
-            retrieved = sample["retrieved_functions"]
-        else:
-            retrieved = retriever.retrieve(query, k=top_k)
-        if val_retriever is not None:
-            arg_vals = val_retriever.retrieve_for_functions(query, retrieved, function_library)
-        else:
-            arg_vals = sample.get("retrieved_argument_values")
-
-        messages = build_messages_for_grpo(query, retrieved, function_library, arg_vals)
-
-        if condition_on_high_reward and HIGH_REWARD_TOKEN in tokenizer.all_special_tokens:
-            messages = inject_reward_token_into_messages(messages, HIGH_REWARD_TOKEN)
-
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        prompts.append(prompt)
-        sample_metas.append({"sample": sample, "gt": gt})
-
-    # Batch generation with vLLM
-    sampling_params = SamplingParams(
-        temperature=0.0,
-        max_tokens=max_new_tokens,
-        stop=["</tool_call>"],
-        include_stop_str_in_output=True,
-        seed=3407,
-    )
-
-    # Create vLLM LLM from the same model
-    # Use the underlying model for vLLM inference
-    t_start = time.perf_counter()
-    outputs = model.fast_generate(prompts, sampling_params)
-    gen_time = time.perf_counter() - t_start
-    logger.info(f"[vLLM-Bench] Batch generation completed in {gen_time:.1f}s ({gen_time/len(prompts):.3f}s/sample)")
-
-    # Process results
-    results = []
-    for idx, (output, meta) in enumerate(zip(outputs, sample_metas)):
-        sample = meta["sample"]
-        gt = meta["gt"]
-        response = output.outputs[0].text
-        t0 = time.perf_counter()
-        # latency is approximated as total_time / batch
-        latency = (gen_time / len(prompts)) * 1000.0
-        cost = estimate_cost(prompts[idx], response)
-        metrics = compute_all_metrics(response, gt, sandbox, latency, cost, function_library)
-        metrics["sample_id"] = sample.get("id", "")
-        results.append(metrics)
-
-    agg = aggregate_metrics(results)
-    logger.info(f"[vLLM-Bench] {model_name_tag} aggregate: {agg}")
-    return {"model": model_name_tag, "per_sample": results, "aggregate": agg}
-
-
-# ===================== benchmark.py =====================
-# ===================== benchmark.py (FIXED) =====================
-# BUG FIXED: paper Sec. 4.1 — "At inference, we condition on r =
-# <|high_reward|> for optimal performance." The original evaluate_model
-# built plain prompts with build_messages_for_grpo() and never injected
-# the reward-goal token, so an RC-GRPO-trained model would be evaluated
-# completely unconditioned (off-distribution relative to how it was
-# trained to behave optimally).
-
 def evaluate_model(
     model_path: str,
     test_dataset_path: str,
@@ -2955,14 +2842,30 @@ def evaluate_model(
     use_dataset_retrieval: bool = True,
     argument_values: dict | None = None,
     condition_on_high_reward: bool = True,
+    use_vllm: bool = True,
+    batch_size: int = 32,
+    gpu_memory_utilization: float | None = None,
 ) -> dict:
+    """
+    Unified evaluation: batched vLLM when use_vllm=True (default, ~10x faster),
+    serial HF generate when use_vllm=False.
+
+    gpu_memory_utilization defaults to TRAIN_CONFIG["model"]["gpu_memory_utilization"]
+    when not explicitly passed.
+    """
     logger = get_logger(__name__)
-    logger.info(f"[Benchmark] Loading model from {model_path}")
+    tag = "vLLM-Bench" if use_vllm else "Benchmark"
+    logger.info(f"[{tag}] Loading model from {model_path}")
+
+    # Resolve gpu_memory_utilization: explicit arg > config default > 0.8 fallback
+    if gpu_memory_utilization is None:
+        gpu_memory_utilization = TRAIN_CONFIG["model"].get("gpu_memory_utilization", 0.8)
+
     model, tokenizer = load_model(
         adapter_model_path=model_path,
         mode="inference",
         fast_inference=True,
-        gpu_memory_utilization=0.85,
+        gpu_memory_utilization=gpu_memory_utilization,
         env_name=ENV_NAME,
     )
 
@@ -2975,39 +2878,94 @@ def evaluate_model(
         for obj in reader:
             test_samples.append(obj)
 
-    logger.info(f"[Benchmark] {model_name_tag}: evaluating {len(test_samples)} samples")
-    results = []
-    for sample in tqdm(test_samples, desc=f"Eval [{model_name_tag}]"):
-        query = sample["query"]
-        gt = sample.get("ground_truth", {})
-        if use_dataset_retrieval and sample.get("retrieved_functions"):
-            retrieved = sample["retrieved_functions"]
-        else:
-            retrieved = retriever.retrieve(query, k=top_k)
-        if val_retriever is not None:
-            arg_vals = val_retriever.retrieve_for_functions(query, retrieved, function_library)
-        else:
-            arg_vals = sample.get("retrieved_argument_values")
+    suffix = f" (batch_size={batch_size})" if use_vllm else ""
+    logger.info(f"[{tag}] {model_name_tag}: evaluating {len(test_samples)} samples{suffix}")
 
-        messages = build_messages_for_grpo(query, retrieved, function_library, arg_vals)
+    if use_vllm:
+        # ── Batched generation with vLLM ──────────────────────────────
+        from vllm import SamplingParams
 
-        # FIXED: condition on <|high_reward|> at inference (Sec. 4.1), only
-        # meaningful/safe if the reward tokens are actually registered
-        # (i.e. this checkpoint went through RCTP-FT / RC-GRPO).
-        if condition_on_high_reward and HIGH_REWARD_TOKEN in tokenizer.all_special_tokens:
-            messages = inject_reward_token_into_messages(messages, HIGH_REWARD_TOKEN)
+        prompts = []
+        sample_metas = []
+        for sample in test_samples:
+            query = sample["query"]
+            gt = sample.get("ground_truth", {})
+            if use_dataset_retrieval and sample.get("retrieved_functions"):
+                retrieved = sample["retrieved_functions"]
+            else:
+                retrieved = retriever.retrieve(query, k=top_k)
+            if val_retriever is not None:
+                arg_vals = val_retriever.retrieve_for_functions(query, retrieved, function_library)
+            else:
+                arg_vals = sample.get("retrieved_argument_values")
 
-        prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        t0 = time.perf_counter()
-        response = generate_response(model, tokenizer, prompt, max_new_tokens, temperature=0.0, do_sample=False)
-        latency = (time.perf_counter() - t0) * 1000.0
-        cost = estimate_cost(prompt, response)
-        metrics = compute_all_metrics(response, gt, sandbox, latency, cost, function_library)
-        metrics["sample_id"] = sample.get("id", "")
-        results.append(metrics)
+            messages = build_messages_for_grpo(query, retrieved, function_library, arg_vals)
+
+            if condition_on_high_reward and HIGH_REWARD_TOKEN in tokenizer.all_special_tokens:
+                messages = inject_reward_token_into_messages(messages, HIGH_REWARD_TOKEN)
+
+            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompts.append(prompt)
+            sample_metas.append({"sample": sample, "gt": gt})
+
+        sampling_params = SamplingParams(
+            temperature=0.0,
+            max_tokens=max_new_tokens,
+            stop=["</tool_call>"],
+            include_stop_str_in_output=True,
+            seed=3407,
+        )
+
+        t_start = time.perf_counter()
+        outputs = model.fast_generate(prompts, sampling_params)
+        gen_time = time.perf_counter() - t_start
+        logger.info(f"[{tag}] Batch generation completed in {gen_time:.1f}s ({gen_time/len(prompts):.3f}s/sample)")
+
+        results = []
+        for idx, (output, meta) in enumerate(zip(outputs, sample_metas)):
+            sample = meta["sample"]
+            gt = meta["gt"]
+            response = output.outputs[0].text
+            latency = (gen_time / len(prompts)) * 1000.0
+            cost = estimate_cost(prompts[idx], response)
+            metrics = compute_all_metrics(response, gt, sandbox, latency, cost, function_library)
+            metrics["sample_id"] = sample.get("id", "")
+            results.append(metrics)
+
+    else:
+        # ── Serial generation with HF generate ─────────────────────────
+        results = []
+        for sample in tqdm(test_samples, desc=f"Eval [{model_name_tag}]"):
+            query = sample["query"]
+            gt = sample.get("ground_truth", {})
+            if use_dataset_retrieval and sample.get("retrieved_functions"):
+                retrieved = sample["retrieved_functions"]
+            else:
+                retrieved = retriever.retrieve(query, k=top_k)
+            if val_retriever is not None:
+                arg_vals = val_retriever.retrieve_for_functions(query, retrieved, function_library)
+            else:
+                arg_vals = sample.get("retrieved_argument_values")
+
+            messages = build_messages_for_grpo(query, retrieved, function_library, arg_vals)
+
+            # Condition on <|high_reward|> at inference (Sec. 4.1), only
+            # meaningful/safe if the reward tokens are actually registered
+            # (i.e. this checkpoint went through RCTP-FT / RC-GRPO).
+            if condition_on_high_reward and HIGH_REWARD_TOKEN in tokenizer.all_special_tokens:
+                messages = inject_reward_token_into_messages(messages, HIGH_REWARD_TOKEN)
+
+            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            t0 = time.perf_counter()
+            response = generate_response(model, tokenizer, prompt, max_new_tokens, temperature=0.0, do_sample=False)
+            latency = (time.perf_counter() - t0) * 1000.0
+            cost = estimate_cost(prompt, response)
+            metrics = compute_all_metrics(response, gt, sandbox, latency, cost, function_library)
+            metrics["sample_id"] = sample.get("id", "")
+            results.append(metrics)
 
     agg = aggregate_metrics(results)
-    logger.info(f"[Benchmark] {model_name_tag} aggregate: {agg}")
+    logger.info(f"[{tag}] {model_name_tag} aggregate: {agg}")
     return {"model": model_name_tag, "per_sample": results, "aggregate": agg}
 
 ```
@@ -3629,39 +3587,27 @@ if ENV_NAME == "colab":
 
 ```python
 # ===================== EVALUATION =====================
-os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval load_model reads this → 0.8
+os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval: ensures no dual vLLM engines; gpu_memory_utilization is passed explicitly from TRAIN_CONFIG
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
     retriever = FunctionRetriever(function_library, method="hybrid")
     sandbox = Sandbox(function_library)
 
-    if EVAL_USE_VLLM:
-        eval_result = evaluate_model_vllm(
-            model_path=MODE_OUTPUT_DIR,
-            test_dataset_path=test_dataset_path,
-            function_library=function_library,
-            retriever=retriever,
-            sandbox=sandbox,
-            top_k=5,
-            max_new_tokens=512,
-            model_name_tag=MODE,
-            condition_on_high_reward=(MODE == "rc_grpo"),
-            argument_values=argument_values_catalog,
-            batch_size=TRAIN_CONFIG["data"].get("eval_batch_size", 32),
-        )
-    else:
-        eval_result = evaluate_model(
-            model_path=MODE_OUTPUT_DIR,
-            test_dataset_path=test_dataset_path,
-            function_library=function_library,
-            retriever=retriever,
-            sandbox=sandbox,
-            top_k=5,
-            max_new_tokens=512,
-            model_name_tag=MODE,
-            condition_on_high_reward=(MODE == "rc_grpo"),
-            argument_values=argument_values_catalog,
-        )
+    eval_result = evaluate_model(
+        model_path=MODE_OUTPUT_DIR,
+        test_dataset_path=test_dataset_path,
+        function_library=function_library,
+        retriever=retriever,
+        sandbox=sandbox,
+        top_k=5,
+        max_new_tokens=512,
+        model_name_tag=MODE,
+        condition_on_high_reward=(MODE == "rc_grpo"),
+        argument_values=argument_values_catalog,
+        use_vllm=EVAL_USE_VLLM,
+        batch_size=TRAIN_CONFIG["data"].get("eval_batch_size", 32),
+        gpu_memory_utilization=TRAIN_CONFIG["model"].get("gpu_memory_utilization", 0.8),
+    )
     from tabulate import tabulate
     agg = eval_result["aggregate"]
     metric_names = [

@@ -1,3 +1,11 @@
+# ═══════════════════════════════════════════════════════════════════════
+# NOTEBOOK DISCLAIMER: This YAML is loaded by scripts/ (data pipeline)
+# via OmegaConf. The notebook (Qwen3_(4B)_GRPO_ToolCalling.ipynb) uses
+# its own hardcoded TRAIN_CONFIG dict — which is the source of truth.
+# Values here diverge from TRAIN_CONFIG. Do NOT add notebook config
+# values to this file; add them to TRAIN_CONFIG in the notebook.
+# ═══════════════════════════════════════════════════════════════════════
+
 # ─────────────────────────────────────────────
 # Shared base configuration for all algorithms
 # ─────────────────────────────────────────────
