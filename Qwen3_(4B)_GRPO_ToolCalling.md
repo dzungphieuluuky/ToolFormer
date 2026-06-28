@@ -224,7 +224,10 @@ def load_secret(key_name: str) -> str | None:
 
 
 def print_system_info():
-    """Print Python version, PyTorch/CUDA info, GPU count and nvidia-smi output."""
+    """Print Python version, PyTorch/CUDA info, GPU count and nvidia-smi output.
+
+    Useful for debugging environment configuration in Colab/Kaggle/local setups.
+    """
     print("\n🔧 System Information")
     print(f"Python version: {sys.version.split()[0]}")
     try:
@@ -692,18 +695,18 @@ _VN_STOPWORDS = frozenset({
 
 @lru_cache(maxsize=8192)
 def normalize_vietnamese(text: str) -> str:
-    """
-    Full normalization pipeline:
-      1. Lowercase
-      2. NFKD decomposition (strips combining diacritics: ắ → a)
-      3. Vietnamese-specific char map (đ → d)
-      4. Remove remaining combining characters
-      5. Collapse whitespace
-      6. Strip
+    """Normalize Vietnamese text through a full diacritic-stripping pipeline.
 
-    "Hà Nội"   → "ha noi"
-    "Đà Nẵng"  → "da nang"
-    "Thành phố Hồ Chí Minh" → "thanh pho ho chi minh"
+    Steps: lowercase → NFKD decomposition (ắ → a) → char mapping (đ → d)
+    → remove combining chars → collapse whitespace → strip.
+
+    Example: "Hà Nội" → "ha noi"
+
+    Args:
+        text: Input Vietnamese text with possible diacritics.
+
+    Returns:
+        Lowercase, diacritic-stripped, whitespace-collapsed string.
     """
     text = text.lower()
 
@@ -729,9 +732,15 @@ def normalize_vietnamese(text: str) -> str:
 
 
 def expand_synonyms(text_normalized: str) -> str:
-    """
-    Expand Vietnamese abbreviations in already-normalized text.
-    "tp hcm" → "thanh pho ho chi minh"
+    """Expand Vietnamese abbreviations in already-normalized text.
+
+    Example: "tp hcm" → "thanh pho ho chi minh"
+
+    Args:
+        text_normalized: Diacritic-stripped Vietnamese text.
+
+    Returns:
+        Text with abbreviations expanded to full forms.
     """
     tokens = text_normalized.split()
     expanded = []
@@ -744,8 +753,14 @@ def expand_synonyms(text_normalized: str) -> str:
 
 
 def tokenize_meaningful(text_normalized: str, min_len: int = 2) -> set[str]:
-    """
-    Extract meaningful tokens (skip stopwords and very short tokens).
+    """Extract meaningful tokens, skipping stopwords and very short tokens.
+
+    Args:
+        text_normalized: Diacritic-stripped Vietnamese text.
+        min_len: Minimum token length to include (default: 2).
+
+    Returns:
+        Set of meaningful token strings.
     """
     tokens = text_normalized.split()
     return {
@@ -755,7 +770,15 @@ def tokenize_meaningful(text_normalized: str, min_len: int = 2) -> set[str]:
 
 
 def build_ngrams(text: str, n: int = 2) -> set[str]:
-    """Character n-grams for fuzzy matching on short codes."""
+    """Build character n-grams for fuzzy matching on short codes.
+
+    Args:
+        text: Input string to n-gram.
+        n: N-gram size (default: 2).
+
+    Returns:
+        Set of character n-gram strings.
+    """
     text = text.replace(" ", "")
     if len(text) < n:
         return {text}
@@ -799,7 +822,12 @@ class CatalogEntry:
     _aliases: list[str] = field(init=False, repr=False, default_factory=list)
 
     def __post_init__(self):
-        self._norm_label = normalize_vietnamese(self.label)
+        """Pre-compute normalized forms and token sets at load time.
+
+        Builds normalized label/alt/code strings and a set of meaningful
+        tokens from the combined label and alt_label, expanded with synonyms.
+        These pre-computed fields enable fast matching during retrieval.
+        """
         self._norm_alt = normalize_vietnamese(self.alt_label) if self.alt_label else ""
         self._norm_code = normalize_vietnamese(self.code)
         # Combine all normalized forms for token matching
@@ -808,7 +836,11 @@ class CatalogEntry:
         self._label_tokens = tokenize_meaningful(all_text_expanded)
 
     def add_alias(self, alias: str) -> None:
-        """Add an extra alias (e.g., from a hand-curated alias table)."""
+        """Register an additional alias string for this entry.
+
+        Args:
+            alias: Alias string to add (e.g., from a hand-curated alias table).
+        """
         norm = normalize_vietnamese(alias)
         self._aliases.append(norm)
         self._label_tokens = self._label_tokens | tokenize_meaningful(norm)
@@ -842,7 +874,16 @@ class ValueCatalog:
         entries: list[CatalogEntry],
         aliases: dict[str, str] | None = None,
     ):
-        self.param_name = param_name
+        """Initialize the catalog with entries and optional alias mappings.
+
+        Builds a reverse alias index mapping normalized labels, alt labels,
+        and codes to their entry indices for fast lookup.
+
+        Args:
+            param_name: Name of the parameter this catalog manages.
+            entries: List of CatalogEntry instances.
+            aliases: Optional dict mapping alias strings to target codes.
+        """
         self.entries = entries
         self.size = len(entries)
 
@@ -872,8 +913,15 @@ class ValueCatalog:
         query_tokens: set[str],
         top_k: int = 3,
     ) -> list[ValueMatch]:
-        """
-        Score all entries against the query. Returns top-k matches.
+        """Score all catalog entries against the query and return top-k.
+
+        Args:
+            query_normalized: Diacritic-stripped query string.
+            query_tokens: Set of meaningful tokens from the query.
+            top_k: Maximum number of matches to return (default: 3).
+
+        Returns:
+            List of ValueMatch objects sorted by descending score.
         """
         scored: list[tuple[float, CatalogEntry]] = []
 
@@ -899,7 +947,13 @@ class ValueCatalog:
         ]
 
     def get_all(self) -> list[ValueMatch]:
-        """Return ALL values (for small enums)."""
+        """Return ALL catalog entries as matches with score 1.0.
+
+        Intended for small enums where the full set should be shown.
+
+        Returns:
+            List of ValueMatch objects with perfect scores.
+        """
         return [
             ValueMatch(
                 code=e.code,
@@ -917,6 +971,19 @@ class ValueCatalog:
         query_norm: str,
         query_tokens: set[str],
     ) -> float:
+        """Score a single catalog entry against the query.
+
+        Uses a priority-based scoring system: exact code match > full label
+        match > alias match > token overlap > character n-gram similarity.
+
+        Args:
+            entry: CatalogEntry to score.
+            query_norm: Diacritic-stripped query string.
+            query_tokens: Set of meaningful tokens from the query.
+
+        Returns:
+            Similarity score between 0.0 and 1.0.
+        """
         # ── Priority 1: Exact code in query ──────────────────────────
         # "5G" in "tim toc do 5g viettel" → exact hit
         code_lower = entry.code.lower()
@@ -973,29 +1040,17 @@ def load_catalog_from_json(
     json_path: str,
     aliases_path: str | None = None,
 ) -> dict[str, ValueCatalog]:
-    """
-    Load argument value catalogs from JSON.
+    """Load argument value catalogs from a JSON file.
 
-    Expected format:
-    {
-      "location_code": [
-        {"code": "HNI", "label": "Hà Nội", "group": "province", "alt_label": "Ha Noi"},
-        ...
-      ],
-      "tech_type": [
-        {"code": "5G", "label": "5G NR", "group": "technology"},
-        ...
-      ]
-    }
+    Expected format per param: list of {"code", "label", "group", "alt_label"}.
+    Optional aliases file maps alias strings to target codes per param.
 
-    Optional aliases file (JSON):
-    {
-      "location_code": {
-        "Sài Gòn": "HCM",
-        "TPHCM": "HCM",
-        "Thủ đô": "HNI"
-      }
-    }
+    Args:
+        json_path: Path to JSON file with catalog entries.
+        aliases_path: Optional path to JSON file with alias mappings.
+
+    Returns:
+        Dict mapping parameter names to ValueCatalog instances.
     """
     with open(json_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
@@ -1094,22 +1149,45 @@ _DATE_PATTERNS = [
 
 
 def _last_day(year: int, month: int) -> str:
-    """Last day of a given month."""
+    """Return the last day of a given month as an ISO-8601 string.
+
+    Args:
+        year: Calendar year.
+        month: Month number (1-12).
+
+    Returns:
+        ISO-8601 date string for the last day of the month.
+    """
     import calendar
     last = calendar.monthrange(year, month)[1]
     return f"{year}-{month:02d}-{last:02d}"
 
 
 def _quarter_range(q: int, year: int) -> tuple[str, str]:
+    """Return the start and end dates for a given quarter.
+
+    Args:
+        q: Quarter number (1-4).
+        year: Calendar year.
+
+    Returns:
+        Tuple of (start_date, end_date) as ISO-8601 strings.
+    """
     starts = {1: "01-01", 2: "04-01", 3: "07-01", 4: "10-01"}
     ends = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
     return (f"{year}-{starts[q]}", f"{year}-{ends[q]}")
 
 
 def extract_dates(query: str) -> dict[str, str]:
-    """
-    Extract from_date and to_date from Vietnamese query.
-    Returns dict with 'from_date' and/or 'to_date' keys.
+    """Extract from_date and to_date from a Vietnamese query.
+
+    Matches patterns like "tháng 6/2026", "năm 2022", "Q1/2025", etc.
+
+    Args:
+        query: Vietnamese query string.
+
+    Returns:
+        Dict with 'from_date' and 'to_date' keys (ISO-8601), or empty dict.
     """
     query_lower = query.lower()
     for pattern, extractor in _DATE_PATTERNS:
@@ -1145,7 +1223,17 @@ _DATA_LEVEL_PATTERNS = [
 
 
 def extract_data_level(query: str) -> str | None:
-    """Extract aggregation level from Vietnamese query."""
+    """Extract aggregation level from a Vietnamese query.
+
+    Matches patterns like "theo ngày" (day), "theo tháng" (month),
+    "theo năm" (year), etc.
+
+    Args:
+        query: Vietnamese query string.
+
+    Returns:
+        Aggregation level string ("day", "week", "month", "year"), or None.
+    """
     query_norm = normalize_vietnamese(query)
     for pattern, level in _DATA_LEVEL_PATTERNS:
         if re.search(pattern, query_norm):
@@ -1177,6 +1265,19 @@ class FunctionRetriever:
         bm25_weight: float = 0.5,
         emb_weight: float = 0.5,
     ):
+        """Initialize retriever with function library and optional embedding model.
+
+        Builds a BM25 index over normalized Vietnamese descriptions. When
+        method="hybrid", also loads a sentence-transformer encoder for
+        embedding-based scoring.
+
+        Args:
+            function_library: Dict mapping function names to schemas.
+            method: Retrieval method ("bm25" or "hybrid").
+            encoder_model: Sentence-transformer model name (required for hybrid).
+            bm25_weight: BM25 score weight in hybrid mode.
+            emb_weight: Embedding score weight in hybrid mode.
+        """
         self.library = function_library
         self.method = method
         self.func_names = list(function_library.keys())
@@ -1215,6 +1316,11 @@ class FunctionRetriever:
         return " ".join(p for p in parts if p)
 
     def _init_embeddings(self, model_name: str):
+        """Load sentence-transformer model and pre-encode search texts.
+
+        Args:
+            model_name: HuggingFace model name for sentence-transformers.
+        """
         from sentence_transformers import SentenceTransformer
         self._encoder = SentenceTransformer(model_name)
         self._embeddings = self._encoder.encode(
@@ -1225,16 +1331,44 @@ class FunctionRetriever:
         )
 
     def retrieve(self, query: str, k: int = 5) -> list[str]:
+        """Return top-k function names matching the query.
+
+        Args:
+            query: Natural language query string.
+            k: Number of functions to return.
+
+        Returns:
+            List of function names sorted by descending relevance.
+        """
         scores = self._score(query)
         top_k = np.argsort(scores)[-k:][::-1]
         return [self.func_names[i] for i in top_k]
 
     def retrieve_with_scores(self, query: str, k: int = 5) -> list[tuple[str, float]]:
+        """Return top-k (function_name, score) pairs.
+
+        Args:
+            query: Natural language query string.
+            k: Number of results to return.
+
+        Returns:
+            List of (function_name, relevance_score) tuples.
+        """
         scores = self._score(query)
         top_k = np.argsort(scores)[-k:][::-1]
         return [(self.func_names[i], float(scores[i])) for i in top_k]
 
     def _score(self, query: str) -> np.ndarray:
+        """Compute raw relevance scores for all functions.
+
+        Uses BM25 alone or hybrid BM25 + embedding scoring.
+
+        Args:
+            query: Natural language query string.
+
+        Returns:
+            NumPy array of scores, one per indexed function.
+        """
         query_norm = expand_synonyms(normalize_vietnamese(query))
 
         if self.method == "bm25" or self._encoder is None:
@@ -1245,15 +1379,39 @@ class FunctionRetriever:
         return self.bm25_weight * bm25 + self.emb_weight * emb
 
     def _bm25_scores(self, query_normalized: str) -> np.ndarray:
+        """Compute BM25 scores for a normalized query.
+
+        Args:
+            query_normalized: Vietnamese-normalized query string.
+
+        Returns:
+            NumPy array of BM25 scores.
+        """
         tokens = query_normalized.split()
         return np.array(self._bm25.get_scores(tokens), dtype=np.float32)
 
     def _emb_scores(self, query: str) -> np.ndarray:
+        """Compute cosine similarity scores using pre-computed embeddings.
+
+        Args:
+            query: Raw query string.
+
+        Returns:
+            NumPy array of embedding similarity scores.
+        """
         q = self._encoder.encode(query, convert_to_numpy=True, normalize_embeddings=True)
         return (self._embeddings @ q).astype(np.float32)
 
     @staticmethod
     def _minmax(arr: np.ndarray) -> np.ndarray:
+        """Min-max normalize a NumPy array to [0, 1] range.
+
+        Args:
+            arr: Input array.
+
+        Returns:
+            Normalized array with values in [0, 1].
+        """
         lo, hi = arr.min(), arr.max()
         return (arr - lo) / (hi - lo + 1e-9)
 
@@ -1280,6 +1438,13 @@ class ArgumentValueRetriever:
         top_k_values: int = 5,
         include_all_threshold: int = 12,
     ):
+        """Initialize retriever with argument value catalogs.
+
+        Args:
+            catalogs: Dict mapping parameter names to ValueCatalog instances.
+            top_k_values: Maximum number of matches to return per parameter.
+            include_all_threshold: Parameters with ≤ this many values return all.
+        """
         self.catalogs = catalogs
         self.top_k = top_k_values
         self.include_all_threshold = include_all_threshold
@@ -1291,7 +1456,12 @@ class ArgumentValueRetriever:
             self._param_to_catalog[key] = key
 
     def add_param_mapping(self, param_name: str, catalog_key: str) -> None:
-        """Explicitly map a schema parameter name to a catalog key."""
+        """Explicitly map a schema parameter name to a catalog key.
+
+        Args:
+            param_name: Parameter name in the function schema.
+            catalog_key: Key in the catalogs dict to map to.
+        """
         self._param_to_catalog[param_name] = catalog_key
 
     def retrieve_for_function(
@@ -1300,7 +1470,16 @@ class ArgumentValueRetriever:
         function_schema: dict,
     ) -> dict[str, list[ValueMatch]]:
         """
-        For each parameter in the function schema, find matching values.
+        Find matching argument values for each parameter in a function schema.
+
+        Handles dates, data_level, standard catalog lookups, and inline enums.
+
+        Args:
+            query: Natural language query string.
+            function_schema: Dict describing the function's parameters.
+
+        Returns:
+            Dict mapping parameter names to lists of ValueMatch candidates.
         """
         result: dict[str, list[ValueMatch]] = {}
         params = function_schema.get("parameters", {})
@@ -1384,7 +1563,18 @@ class ArgumentValueRetriever:
         function_names: list[str],
         function_library: dict,
     ) -> dict[str, list[ValueMatch]]:
-        """Merge value matches across multiple candidate functions."""
+        """Merge argument value matches across multiple candidate functions.
+
+        Deduplicates by code and keeps top-k highest-scored matches per parameter.
+
+        Args:
+            query: Natural language query string.
+            function_names: List of candidate function names.
+            function_library: Dict mapping function names to schemas.
+
+        Returns:
+            Dict mapping parameter names to merged, ranked ValueMatch lists.
+        """
         combined: dict[str, list[ValueMatch]] = {}
 
         for fn in function_names:
@@ -1467,6 +1657,12 @@ class TelcoRetriever:
         func_retriever: FunctionRetriever,
         value_retriever: ArgumentValueRetriever,
     ):
+        """Initialize combined retriever from pre-built sub-retrievers.
+
+        Args:
+            func_retriever: Configured FunctionRetriever instance.
+            value_retriever: Configured ArgumentValueRetriever instance.
+        """
         self.func_retriever = func_retriever
         self.value_retriever = value_retriever
 
@@ -1480,6 +1676,19 @@ class TelcoRetriever:
         top_k_values: int = 5,
         include_all_threshold: int = 12,
     ) -> "TelcoRetriever":
+        """Factory method that builds both sub-retrievers from raw config.
+
+        Args:
+            function_library: Dict mapping function names to schemas.
+            catalogs: Dict mapping parameter names to ValueCatalog instances.
+            method: Retrieval method ("bm25" or "hybrid").
+            encoder_model: Sentence-transformer model (required for hybrid).
+            top_k_values: Max argument value matches per parameter.
+            include_all_threshold: Return all values for small enums.
+
+        Returns:
+            Configured TelcoRetriever instance.
+        """
         func_ret = FunctionRetriever(
             function_library, method=method, encoder_model=encoder_model
         )
@@ -1497,6 +1706,17 @@ class TelcoRetriever:
         k: int = 5,
         precomputed_func_names: list[str] | None = None,
     ) -> RetrievalResult:
+        """Retrieve relevant functions and their argument values for a query.
+
+        Args:
+            query: Natural language query string.
+            function_library: Dict mapping function names to schemas.
+            k: Number of functions to retrieve.
+            precomputed_func_names: Optional pre-computed function list (skips retrieval).
+
+        Returns:
+            RetrievalResult with function names, argument values, dates and data level.
+        """
         if precomputed_func_names is not None:
             func_names = precomputed_func_names
         else:
@@ -1521,6 +1741,15 @@ class TelcoRetriever:
 ```python
 # ===================== excel_parser.py =====================
 def _safe_json(value: str, fallback=None):
+    """Safely parse a string as JSON, falling back to ast.literal_eval.
+
+    Args:
+        value: String to parse.
+        fallback: Default return value on parse failure.
+
+    Returns:
+        Parsed value or fallback.
+    """
     if not isinstance(value, str) or not value.strip():
         return fallback
     try:
@@ -1532,6 +1761,14 @@ def _safe_json(value: str, fallback=None):
             return fallback
 
 def _safe_list(value: str) -> list:
+    """Parse a string into a list, handling JSON arrays and comma-separated values.
+
+    Args:
+        value: String to parse (JSON array or comma-separated).
+
+    Returns:
+        Parsed list, or empty list on failure.
+    """
     result = _safe_json(value, fallback=None)
     if isinstance(result, list):
         return result
@@ -1540,6 +1777,22 @@ def _safe_list(value: str) -> list:
     return []
 
 def parse_telecom_functions(excel_path: str, output_path: Optional[str] = None) -> dict:
+    """Parse telecom function definitions from an Excel spreadsheet.
+
+    Expected columns: function_name, description, parameters, and optional
+    columns like example_queries, domain_info, constraints, tags.
+
+    Args:
+        excel_path: Path to the Excel file.
+        output_path: Optional path to save the parsed library as JSON.
+
+    Returns:
+        Dict mapping function names to parsed schema dicts.
+
+    Raises:
+        FileNotFoundError: If the Excel file does not exist.
+        ValueError: If required columns are missing.
+    """
     import ast
     path = Path(excel_path)
     if not path.exists():
@@ -1578,10 +1831,26 @@ def parse_telecom_functions(excel_path: str, output_path: Optional[str] = None) 
     return library
 
 def load_function_library(library_path: str) -> dict:
+    """Load a function library from a JSON file.
+
+    Args:
+        library_path: Path to the JSON library file.
+
+    Returns:
+        Dict mapping function names to schemas.
+    """
     with open(library_path, "r", encoding="utf-8") as fh:
         return json.load(fh)
 
 def load_function_schema(schema_path: str) -> dict:
+    """Load a function schema from a JSON file.
+
+    Args:
+        schema_path: Path to the JSON schema file.
+
+    Returns:
+        Dict representation of the schema.
+    """
     with open(schema_path, "r", encoding="utf-8") as fh:
         return json.load(fh)
 ```
@@ -1603,7 +1872,14 @@ from typing import Any
 # ─────────────────────────────────────────────────────────────────────
 # ===== ADD THIS =====
 def normalize_ground_truth(gt: dict) -> dict:
-    """Normalise a ground_truth dict to a consistent schema."""
+    """Normalise a ground_truth dict to a consistent schema with calls and reasoning.
+
+    Args:
+        gt: Raw ground_truth dict with optional 'calls' and 'reasoning'.
+
+    Returns:
+        Normalised dict with 'calls' (list) and 'reasoning' (str) keys.
+    """
     if not isinstance(gt, dict):
         return {}
     calls = gt.get("calls", [])
@@ -1622,7 +1898,16 @@ def normalize_ground_truth(gt: dict) -> dict:
     }
 # ===== END ADD =====
 def _parse_gt(gt) -> dict:
-    """Coerce ground_truth (JSON string or dict) into a dict and normalize."""
+    """Coerce ground_truth (JSON string or dict) into a normalised dict.
+
+    Handles both string and dict inputs for backward compatibility.
+
+    Args:
+        gt: Ground truth as a JSON string or a dict.
+
+    Returns:
+        Normalised ground_truth dict, or empty dict on failure.
+    """
     if isinstance(gt, dict):
         return normalize_ground_truth(gt)
     if isinstance(gt, str):
@@ -1642,7 +1927,17 @@ _REASON_RE = _REASONING_RE
 
 
 def extract_call(response: str) -> dict | None:
-    """Extract the first <tool_call>...</tool_call> JSON from a response."""
+    """Extract the first <tool_call> block from a model response.
+
+    Attempts to parse the first <tool_call>...</tool_call> XML block as JSON.
+    Falls back to a legacy <call> tag if no <tool_call> is found.
+
+    Args:
+        response: Model output string.
+
+    Returns:
+        Parsed call dict, or None if no valid call is found.
+    """
     match = _TOOL_CALL_RE.search(response)
     if not match:
         # legacy fallback
@@ -1667,7 +1962,16 @@ def extract_call(response: str) -> dict | None:
 
 
 def extract_all_calls(response: str) -> list[dict]:
-    """Extract ALL <tool_call> JSON blocks from a response (for sequential workflows)."""
+    """Extract ALL <tool_call> blocks from a model response.
+
+    Used for sequential workflows where multiple tool calls are expected.
+
+    Args:
+        response: Model output string.
+
+    Returns:
+        List of parsed call dicts (empty if none found).
+    """
     calls = []
     for m in _TOOL_CALL_RE.finditer(response):
         raw = m.group(1).strip()
@@ -1683,6 +1987,14 @@ def extract_all_calls(response: str) -> list[dict]:
 
 
 def extract_reasoning(response: str) -> str:
+    """Extract the <reasoning>...</reasoning> block from a model response.
+
+    Args:
+        response: Model output string.
+
+    Returns:
+        Reasoning text, or empty string if no reasoning block is found.
+    """
     match = _REASONING_RE.search(response)
     return match.group(1).strip() if match else ""
 
@@ -1692,10 +2004,27 @@ def extract_reasoning(response: str) -> str:
 # ─────────────────────────────────────────────────────────────────────
 
 def schema_valid(response: str) -> float:
+    """Check whether the response contains a valid tool call.
+
+    Args:
+        response: Model output string.
+
+    Returns:
+        1.0 if any tool call is extractable, else 0.0.
+    """
     return 1.0 if extract_call(response) is not None else 0.0
 
 
 def func_selection_ok(response: str, expected_func: str) -> float:
+    """Check whether the first tool call uses the expected function.
+
+    Args:
+        response: Model output string.
+        expected_func: Expected function name.
+
+    Returns:
+        1.0 if the function matches, else 0.0.
+    """
     call = extract_call(response)
     if call is None:
         return 0.0
@@ -1703,6 +2032,15 @@ def func_selection_ok(response: str, expected_func: str) -> float:
 
 
 def args_accuracy(response: str | dict, expected_args: dict) -> float:
+    """Compute fraction of expected arguments that match exactly.
+
+    Args:
+        response: Model output string or parsed call dict.
+        expected_args: Dict of expected argument names to values.
+
+    Returns:
+        Fraction of arguments that match (0.0 to 1.0).
+    """
     call = extract_call(response) if isinstance(response, str) else response
     if call is None:
         return 0.0
@@ -1718,6 +2056,16 @@ def args_accuracy(response: str | dict, expected_args: dict) -> float:
 
 
 def reasoning_quality(response: str) -> float:
+    """Score the reasoning quality based on length and structure indicators.
+
+    Rewards longer reasoning text that includes step-by-step markers.
+
+    Args:
+        response: Model output string.
+
+    Returns:
+        Score from 0.0 (no reasoning) to 1.0 (long, structured reasoning).
+    """
     text = extract_reasoning(response)
     if not text:
         return 0.0
@@ -1748,11 +2096,23 @@ def make_reward_function(
     sandbox_cls=None,
     weights: dict | None = None,
 ):
-    """
-    Build a reward callable(response_text) -> float for one training sample.
+    """Build a reward callable for one training sample.
 
-    Supports both single_call and sequential workflows via normalize_ground_truth.
-    Returns 1.0 for correct abstention (no gold calls, no agent calls).
+    Constructs a closure that scores model responses on format, function
+    selection, argument accuracy, reasoning quality, and optional sandbox
+    execution. Supports both single_call and sequential workflows via
+    normalize_ground_truth.
+
+    Args:
+        ground_truth: Gold annotation dict with "calls" list.
+        function_library: Mapping of function names to their schemas.
+        sandbox_cls: Optional sandbox class for execution reward.
+        weights: Dict of sub-reward weights. Defaults to format=0.10,
+            function=0.30, arguments=0.40, reasoning=0.10, execution=0.10.
+
+    Returns:
+        A callable(response_text: str) -> float that returns 1.0 for
+        correct abstention (no gold calls, no agent calls).
     """
     gt = normalize_ground_truth(ground_truth)
     w = weights or {
@@ -1830,11 +2190,17 @@ def make_reward_function(
 
 
 def make_binary_reward_function(ground_truth: dict, function_library: dict):
-    """
-    Build a binary reward callable(response_text) -> int (0 or 1).
+    """Build a binary reward callable for RC-GRPO's R(τ).
+
     Returns 1 only if ALL gold calls are matched exactly.
     Returns 1 for correct abstention (no gold calls, no agent calls).
-    Compatible with RC-GRPO's R(τ).
+
+    Args:
+        ground_truth: Raw ground truth dict (will be normalized).
+        function_library: Dict mapping function names to schemas (unused, for API compat).
+
+    Returns:
+        Callable(response_text: str) -> int (0 or 1).
     """
     gt = normalize_ground_truth(ground_truth)
     gold_calls = [
@@ -1870,6 +2236,15 @@ def function_reward(completions: list[str], ground_truth: list, **kwargs) -> lis
 
 
 def format_reward(completions: list[str], **kwargs) -> list[float]:
+    """TRL-compatible: rewards proper tool call and reasoning tag formatting.
+
+    Args:
+        completions: List of model output strings.
+        **kwargs: Unused (TRL compatibility).
+
+    Returns:
+        List of scores, 0.5 for tool calls, 1.0 if both tool call and reasoning.
+    """
     rewards = []
     for c in completions:
         has_tool_call = bool(_TOOL_CALL_RE.search(c))
@@ -1883,8 +2258,20 @@ def format_reward(completions: list[str], **kwargs) -> list[float]:
     return rewards
 
 def argument_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
-    """FIXED: parses JSON-string ground_truth via _parse_gt before use."""
-    """TRL-compatible: measures argument accuracy against ground truth."""
+    """TRL-compatible reward: measures argument accuracy against ground truth.
+
+    Parses JSON-string ground_truth via _parse_gt before use.
+
+    Args:
+        completions: List of model response strings.
+        ground_truth: List of raw ground-truth dicts (JSON strings parsed
+            internally via _parse_gt).
+        **kwargs: Ignored (TRL compatibility).
+
+    Returns:
+        List of float scores, each measuring argument accuracy between the
+        model's extracted call args and the gold expected args.
+    """
     rewards = []
     for c, gt_raw in zip(completions, ground_truth):
         gt = _parse_gt(gt_raw)
@@ -1895,7 +2282,22 @@ def argument_reward(completions: list[str], ground_truth: list, **kwargs) -> lis
 
 
 def composite_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
-    """TRL-compatible: weighted sum of format + function + arguments + reasoning."""
+    """TRL-compatible reward: weighted sum of format, function, arguments, reasoning.
+
+    Computes a single scalar reward per completion as a weighted combination
+    of format correctness, function selection accuracy, argument accuracy,
+    and reasoning quality.
+
+    Args:
+        completions: List of model response strings.
+        ground_truth: List of raw ground-truth dicts (JSON strings parsed
+            internally via _parse_gt).
+        **kwargs: Ignored (TRL compatibility).
+
+    Returns:
+        List of float scores in [0, 1], each a weighted sum of sub-rewards.
+        Returns 1.0 for correct abstention (no gold calls, no model calls).
+    """
     rewards = []
     for c, gt_raw in zip(completions, ground_truth):
         gt = _parse_gt(gt_raw)
@@ -1965,12 +2367,26 @@ def compute_action_coverage_reward(
     agent_tool_calls: List[Dict],
     gold_tool_calls: List[Dict],
 ) -> int:
-    """
-    R_action: 1 iff every gold call is covered by some agent call.
-    Uses {function, arguments} keys consistently.
+    """R_action: 1 iff every gold call is covered by some agent call.
+
+    Args:
+        agent_tool_calls: List of agent-produced function calls.
+        gold_tool_calls: List of ground-truth function calls.
+
+    Returns:
+        1 if all gold calls are matched, 0 otherwise.
     """
 
     def _tool_call_matches(agent_call: dict, gold_call: dict) -> bool:
+        """Check whether an agent call matches a gold call on all fields.
+
+        Args:
+            agent_call: Agent-produced call dict.
+            gold_call: Ground-truth call dict.
+
+        Returns:
+            True if function name and all argument values match.
+        """
         if agent_call.get("function") != gold_call.get("function"):
             return False
         gold_args = gold_call.get("arguments", {})
@@ -1990,11 +2406,18 @@ def compute_group_normalized_advantages(
     group_rewards: List[float],
     epsilon_stable: float = 1e-8,
 ) -> List[float]:
-    """
-    A_j = (R_j - mu_g) / (sigma_g + eps_stab)      (Eq. 6)
+    """Normalize rewards within a group using population z-score (Eq. 6).
 
-    sigma_g is the POPULATION std over the group (ddof=0), matching the
-    paper exactly: sigma_g = sqrt( (1/G) * sum_k (R(tau_k) - mu_g)^2 ).
+    A_j = (R_j - mu_g) / (sigma_g + eps_stab)
+
+    Uses population standard deviation (ddof=0), matching the paper exactly.
+
+    Args:
+        group_rewards: Raw reward values for the group.
+        epsilon_stable: Small constant to avoid division by zero.
+
+    Returns:
+        List of normalized advantage values.
     """
     rewards = np.array(group_rewards, dtype=np.float64)
     mu_g = rewards.mean()
@@ -2009,7 +2432,18 @@ def sample_reward_token_for_group(
     group_size: int,
     high_reward_probability: float = 0.5,
 ) -> List[str]:
-    """Sample G reward tokens from P_sample(r) (Eq. 3)."""
+    """Sample G reward tokens from P_sample(r) (Eq. 3).
+
+    Each token is independently chosen as HIGH or LOW with the given
+    probability, implementing the reward-conditioned sampling distribution.
+
+    Args:
+        group_size: Number of reward tokens to sample.
+        high_reward_probability: Probability of sampling the high-reward token.
+
+    Returns:
+        List of reward token strings (HIGH_REWARD_TOKEN or LOW_REWARD_TOKEN).
+    """
     return [
         HIGH_REWARD_TOKEN
         if random.random() < high_reward_probability
@@ -2046,12 +2480,23 @@ def _make_multi_call_failure_response(
     retrieved_functions: list[str] | None = None,
     query: str = "",
 ) -> str:
-    """
-    Synthesize a FAILURE trajectory for multi-call samples (sequential/parallel).
+    """Synthesize a failure trajectory for multi-call samples.
+
     Randomly chooses one of:
       - skip one call entirely (missing step)
       - corrupt one call (wrong function / missing arg / wrong value)
     Uses retriever-aware function selection and catalog-aware value corruption.
+
+    Args:
+        gold_calls: List of ground-truth function calls.
+        function_library: Dict mapping function names to schemas.
+        retriever: Optional retriever for function selection (unused, for API compat).
+        catalog: Optional argument value catalog for value corruption.
+        retrieved_functions: Pre-retrieved function list.
+        query: Natural language query string.
+
+    Returns:
+        String containing reasoning + corrupted tool calls.
     """
     import random as _random
 
@@ -2069,6 +2514,17 @@ def _make_multi_call_failure_response(
 
     # Helper: pick a confusable function
     def _corrupt_single_call(call: dict) -> dict:
+        """Corrupt a single tool call for failure trajectory generation.
+
+        Randomly applies one of: wrong function name, missing argument,
+        or wrong argument value.
+
+        Args:
+            call: Original correct tool call dict with 'function' and 'arguments'.
+
+        Returns:
+            Corrupted tool call dict.
+        """
         cf = call["function"]
         ca = call.get("arguments", {})
         fk = _random.choice(["wrong_function", "missing_arg", "wrong_arg_value"])
@@ -2150,7 +2606,18 @@ def sample_reward_tokens_for_group(
     group_size: int,
     high_reward_probability: float = 0.5,
 ) -> List[str]:
-    """Sample G reward tokens from P_sample(r) (Eq. 3)."""
+    """Sample G reward tokens from P_sample(r) (Eq. 3).
+
+    Each token is independently chosen as HIGH or LOW with the given
+    probability, implementing the reward-conditioned sampling distribution.
+
+    Args:
+        group_size: Number of reward tokens to sample.
+        high_reward_probability: Probability of sampling the high-reward token.
+
+    Returns:
+        List of reward token strings (HIGH_REWARD_TOKEN or LOW_REWARD_TOKEN).
+    """
     return [
         HIGH_REWARD_TOKEN if _random_module.random() < high_reward_probability else LOW_REWARD_TOKEN
         for _ in range(group_size)
@@ -2161,9 +2628,18 @@ def inject_reward_token_into_messages(
     prompt_messages: List[Dict],
     reward_token: str,
 ) -> List[Dict]:
-    """
-    Inject `[Reward Goal: <token>]` into the system message only
+    """Inject reward-conditioning token into the system message.
+
+    Injects `[Reward Goal: <token>]` into the system message only
     (Appendix B), matching RCTP-FT training exactly.
+
+    Args:
+        prompt_messages: Chat message list with a "system" role entry.
+        reward_token: Token string to inject (e.g. "<|high_reward|>").
+
+    Returns:
+        New message list with the reward token appended to the system
+        message content. Other messages are unchanged.
     """
     out = []
     injected = False
@@ -2190,6 +2666,15 @@ class RCGRPOTrainer(GRPOTrainer):
     """
 
     def __init__(self, *args, high_reward_probability: float = 0.5, **kwargs):
+        """Initialize the RC-GRPO trainer.
+
+        Args:
+            *args: Positional arguments forwarded to GRPOTrainer.
+            high_reward_probability: Probability p for sampling high-reward
+                token (Eq. 3). Should match the empirical success rate of the
+                RCTP-FT dataset.
+            **kwargs: Keyword arguments forwarded to GRPOTrainer.
+        """
         super().__init__(*args, **kwargs)
         self.high_reward_probability = high_reward_probability
         # diagnostics, mirrors paper's "advantage spread" tracking (Table 5)
@@ -2245,20 +2730,21 @@ class RCGRPOTrainer(GRPOTrainer):
 
 
 def rc_grpo_reward_func(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
-    """
-    R(tau) = R_state * R_action (Eq. 5), binary in {0, 1}.
+    """Binary trajectory reward R(tau) = R_state * R_action (Eq. 5).
 
-    FIXED: ground_truth now arrives as a JSON string column (see
-    format_sample_for_grpo) — must json.loads() it first via _parse_gt.
-    FIXED: handles abstention — returns 1.0 when gold calls is empty and
-    model produces no tool call.
-    FIXED: null-function calls in ground_truth are normalized to empty
-    calls list via _parse_gt -> normalize_ground_truth.
+    Returns a binary {0, 1} reward for each completion. Handles abstention
+    (1.0 when no gold calls and no model tool calls). Does NOT look at the
+    reward-conditioning token — per the paper (Sec. 3.3), trajectory reward
+    is a property of the state/action outcome only.
 
-    NOTE: this intentionally does NOT look at the reward-conditioning token
-    — per the paper, the trajectory reward is a property of the
-    state/action outcome only, never the token that was used to *steer*
-    generation (Sec. 3.3, "Trajectory-Level Reward Function").
+    Args:
+        completions: List of model response strings.
+        ground_truth: List of raw ground-truth items (JSON strings parsed
+            internally via _parse_gt then normalized).
+        **kwargs: Ignored (TRL compatibility).
+
+    Returns:
+        List of float binary rewards in {0.0, 1.0}.
     """
     rewards = []
     for completion, gt_raw in zip(completions, ground_truth):
@@ -2284,9 +2770,18 @@ def rc_grpo_reward_func(completions: list[str], ground_truth: list, **kwargs) ->
     return rewards
 
 def rc_grpo_format_func(completions: list[str], **kwargs) -> list[float]:
-    """Lightweight format shaping reward (kept separate from the binary
-    trajectory reward so R(tau) used for reward-token quantization, Eq. 1,
-    stays exactly binary)."""
+    """Lightweight format shaping reward.
+
+    Kept separate from the binary trajectory reward so R(tau) used for
+    reward-token quantization (Eq. 1) stays exactly binary.
+
+    Args:
+        completions: List of model response strings.
+        **kwargs: Forwarded to format_reward().
+
+    Returns:
+        List of float format scores, each in [0, 1].
+    """
     return format_reward(completions, **kwargs)
 ```
 
@@ -2337,7 +2832,16 @@ CUSTOM_CHAT_TEMPLATE = (
 
 
 def patch_tokenizer_for_custom_roles(tokenizer) -> None:
-    """Register custom chat template and reward special tokens."""
+    """Register custom chat template and reward special tokens.
+
+    Sets the tokenizer's chat template to CUSTOM_CHAT_TEMPLATE (supports
+    system, user, assistant, tool, and retriever roles) and adds any
+    missing reward special tokens to the tokenizer's vocabulary.
+
+    Args:
+        tokenizer: A HuggingFace PreTrainedTokenizer or PreTrainedTokenizerFast
+            instance to patch in-place.
+    """
     tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
 
     # --- FIX: always register reward tokens ---
@@ -2405,6 +2909,15 @@ STRICT RULES:
 # ─────────────────────────────────────────────────────────────────────
 
 def build_function_description(func_name: str, schema: dict) -> str:
+    """Build a Markdown description of a single function for the retriever block.
+
+    Args:
+        func_name: Name of the function.
+        schema: Dict with 'description', 'parameters', and optional 'constraints'.
+
+    Returns:
+        Formatted Markdown string describing the function.
+    """
     lines = [f"### {func_name}"]
     lines.append(
         f"Description: {schema.get('description', 'No description available')}"
@@ -2440,6 +2953,15 @@ def build_function_description(func_name: str, schema: dict) -> str:
 
 
 def build_argument_values_block(argument_values: dict[str, list]) -> str:
+    """Build a Markdown block showing retrieved argument values.
+
+    Args:
+        argument_values: Dict mapping parameter names to lists of match objects
+            with 'code', 'label', 'alt_label', and 'group' attributes.
+
+    Returns:
+        Formatted Markdown string, or empty string if no values.
+    """
     if not argument_values:
         return ""
     lines = ["## Relevant Argument Values"]
@@ -2467,6 +2989,17 @@ def build_retriever_block(
     argument_values: dict[str, list] | None = None,
     include_all_threshold: int = 10,
 ) -> str:
+    """Build the full retriever block combining function descriptions and values.
+
+    Args:
+        function_names: List of function names to include.
+        function_library: Dict mapping function names to schemas.
+        argument_values: Optional dict of retrieved argument values.
+        include_all_threshold: Max functions before switching to summary mode.
+
+    Returns:
+        Formatted Markdown string with functions and argument values.
+    """
     lines = ["## Available Functions\n"]
     for fn in function_names:
         if fn in function_library:
@@ -2505,6 +3038,21 @@ def build_messages_for_grpo(
     argument_values: dict[str, list] | None = None,
     include_all_threshold: int = 10,
 ) -> list[dict]:
+    """Build the chat messages for a GRPO training sample.
+
+    Constructs system, user, and retriever messages with function descriptions
+    and argument values.
+
+    Args:
+        query: Natural language query string.
+        function_names: List of retrieved function names.
+        function_library: Dict mapping function names to schemas.
+        argument_values: Optional dict of retrieved argument values.
+        include_all_threshold: Max functions before switching to summary mode.
+
+    Returns:
+        List of message dicts with role/content keys.
+    """
     retriever_content = build_retriever_block(
         function_names,
         function_library,
@@ -2643,6 +3191,20 @@ from vllm import SamplingParams
 
 
 def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig:
+    """Build a TRL GRPOConfig from a configuration dict.
+
+    Extracts training, GRPO, and data sub-config keys and assembles them
+    into a GRPOConfig with proper SamplingParams for vLLM generation.
+
+    Args:
+        config: Full configuration dict with "training", "grpo", and "data"
+            keys (each a sub-dict).
+        output_dir: Optional override for the output directory. If None,
+            falls back to config["training"]["output_dir"].
+
+    Returns:
+        GRPOConfig instance ready to pass to GRPOTrainer.
+    """
     train_cfg = config.get("training", {})
     grpo_cfg = config.get("grpo", {})
     data_cfg = config.get("data", {})
@@ -2702,12 +3264,17 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig
 # ─────────────────────────────────────────────────────────────────────
 
 def build_trl_reward_functions(algorithm: str = "rc_grpo"):
-    """
-    Returns the list of reward functions compatible with TRL's GRPOTrainer
-    for the selected algorithm.
+    """Build the list of reward functions for TRL's GRPOTrainer.
 
-    Each function signature: fn(completions: list[str], **kwargs) -> list[float]
-    kwargs includes 'ground_truth' passed through from the dataset columns.
+    Each returned function has the signature:
+    fn(completions: list[str], **kwargs) -> list[float]
+    where kwargs includes 'ground_truth' from the dataset columns.
+
+    Args:
+        algorithm: Training algorithm name ("rc_grpo" or default).
+
+    Returns:
+        List of reward function callables.
     """
     if algorithm == "rc_grpo":
         return [rc_grpo_reward_func, rc_grpo_format_func]
@@ -2722,11 +3289,17 @@ def inject_reward_token_into_prompt(
     prompt: str,
     reward_token: str,
 ) -> str:
-    """
-    Inject [Reward Goal: <token>] right after the system message content
-    (before the system's <|im_end|> marker) in a pre-built prompt string.
+    """Inject a reward-conditioning token into a pre-built prompt string.
 
-    For use when subclassing TRL's GRPOTrainer to add RC-GRPO support.
+    Inserts [Reward Goal: <token>] after the system message content, before
+    the <|im_end|> marker, matching the RC-GRPO paper's Appendix B format.
+
+    Args:
+        prompt: Pre-built prompt string with system/user messages.
+        reward_token: The reward token string (<|high_reward|> or <|low_reward|>).
+
+    Returns:
+        Prompt string with the reward goal appended to the system message.
     """
     # Find the system message end marker and inject right after system content
     system_end_marker = "<|im_start|>system\n"
@@ -2747,6 +3320,23 @@ def inject_reward_token_into_prompt(
 # ===================== metrics.py =====================
 def compute_all_metrics(response: str, ground_truth: dict, sandbox, latency_ms: float,
                         cost_estimate: float, function_library: dict) -> dict[str, float]:
+    """Compute all evaluation metrics for a single model response.
+
+    Metrics include function selection accuracy, argument accuracy, schema
+    validity, execution success, task success, hallucination rate, and
+    abstention accuracy.
+
+    Args:
+        response: Model output string.
+        ground_truth: Ground truth dict with 'calls' and 'workflow'.
+        sandbox: Sandbox instance for mock execution.
+        latency_ms: Response latency in milliseconds.
+        cost_estimate: Estimated cost per query in USD.
+        function_library: Dict mapping function names to schemas.
+
+    Returns:
+        Dict of metric names to float values.
+    """
     gt = normalize_ground_truth(ground_truth)
     workflow = gt.get("workflow", "single_call")
     gold_calls = [
@@ -2811,6 +3401,14 @@ def compute_all_metrics(response: str, ground_truth: dict, sandbox, latency_ms: 
         "cost_per_query_usd": cost_estimate,
     }
 def aggregate_metrics(results: list[dict[str, float]]) -> dict[str, float]:
+    """Aggregate per-sample metrics into mean, std, and count.
+
+    Args:
+        results: List of per-sample metric dicts.
+
+    Returns:
+        Dict with mean, mean__std, and mean__count for each metric key.
+    """
     if not results:
         return {}
     keys = results[0].keys()
@@ -2826,6 +3424,18 @@ def aggregate_metrics(results: list[dict[str, float]]) -> dict[str, float]:
     return agg
 
 def estimate_cost(prompt: str, response: str, price_per_1k_tokens: float = 0.0002) -> float:
+    """Estimate the cost of a model query based on character count.
+
+    Uses a simple heuristic: total_chars / 1.3 ≈ token count.
+
+    Args:
+        prompt: Input prompt string.
+        response: Model output string.
+        price_per_1k_tokens: Cost per 1000 tokens in USD (default: 0.0002).
+
+    Returns:
+        Estimated cost in USD.
+    """
     total_chars = len(prompt) + len(response)
     tokens_est = total_chars / 1.3
     return (tokens_est / 1000) * price_per_1k_tokens
@@ -2846,12 +3456,29 @@ def evaluate_model(
     batch_size: int = 32,
     gpu_memory_utilization: float | None = None,
 ) -> dict:
-    """
-    Unified evaluation: batched vLLM when use_vllm=True (default, ~10x faster),
-    serial HF generate when use_vllm=False.
+    """Run a unified evaluation using batched vLLM or serial HF generation.
 
-    gpu_memory_utilization defaults to TRAIN_CONFIG["model"]["gpu_memory_utilization"]
-    when not explicitly passed.
+    When use_vllm=True (default), uses batched generation (~10x faster).
+    When use_vllm=False, falls back to serial Hugging Face generate().
+
+    Args:
+        model_path: Path to the model checkpoint.
+        test_dataset_path: Path to JSONL test dataset.
+        function_library: Dict mapping function names to schemas.
+        retriever: FunctionRetriever for function lookup.
+        sandbox: Sandbox for mock execution.
+        top_k: Number of functions to retrieve (default: 5).
+        max_new_tokens: Max generation tokens (default: 512).
+        model_name_tag: Label for result reporting (default: "model").
+        use_dataset_retrieval: Use pre-computed retrieval from dataset (default: True).
+        argument_values: Optional dict of argument value catalogs.
+        condition_on_high_reward: Inject <|high_reward|> token at inference (default: True).
+        use_vllm: Use vLLM for batched generation (default: True).
+        batch_size: Batch size for vLLM (default: 32).
+        gpu_memory_utilization: vLLM GPU memory fraction.
+
+    Returns:
+        Dict with 'model', 'per_sample' results, and 'aggregate' metrics.
     """
     logger = get_logger(__name__)
     tag = "vLLM-Bench" if use_vllm else "Benchmark"
@@ -2985,6 +3612,13 @@ METRIC_DISPLAY_NAMES = {
 }
 
 def generate_report(eval_results: list[dict], output_dir: str = "outputs/evaluation_reports") -> None:
+    """Generate an evaluation report with CSV, JSON, and optional plots.
+
+    Args:
+        eval_results: List of evaluation result dicts with 'model', 'aggregate',
+            and 'per_sample' keys.
+        output_dir: Directory to save report files.
+    """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -3015,6 +3649,12 @@ def generate_report(eval_results: list[dict], output_dir: str = "outputs/evaluat
         print(f"Plot generation failed: {e}")
 
 def _plot_bar_comparison(df: pd.DataFrame, out: Path) -> None:
+    """Plot a grouped bar chart comparing core metrics across models.
+
+    Args:
+        df: DataFrame with models as index and metrics as columns.
+        out: Output directory to save the plot image.
+    """
     core_metrics = ["Func. Selection Acc.", "Arg. Accuracy", "Schema Validity",
                     "Exec. Success Rate", "Task Success Rate"]
     plot_df = df[[c for c in core_metrics if c in df.columns]]
@@ -3030,6 +3670,12 @@ def _plot_bar_comparison(df: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
 
 def _plot_radar(df: pd.DataFrame, out: Path) -> None:
+    """Plot a radar chart comparing model metrics.
+
+    Args:
+        df: DataFrame with models as index and metrics as columns.
+        out: Output directory to save the plot image.
+    """
     radar_metrics = ["Func. Selection Acc.", "Arg. Accuracy", "Schema Validity",
                      "Exec. Success Rate", "Task Success Rate", "Abstention Acc."]
     categories = [c for c in radar_metrics if c in df.columns]
@@ -3174,7 +3820,21 @@ MODE_OUTPUT_DIR = TRAIN_CONFIG["training"]["output_dir"]
 ```python
 # ── Smart truncation safety net ─────────────────────────────────────
 def smart_truncate(text, tokenizer, max_seq_length, verbose=True):
-    """Truncate pre-assistant content to preserve the full assistant response."""
+    """Truncate pre-assistant content to preserve the full assistant response.
+
+    When the total sequence exceeds max_seq_length, truncates only the
+    context before the assistant marker while keeping the assistant response
+    intact.
+
+    Args:
+        text: Full prompt + assistant response string.
+        tokenizer: Tokenizer for encoding/decoding.
+        max_seq_length: Maximum allowed token count.
+        verbose: Whether to print truncation info (default: True).
+
+    Returns:
+        Truncated text string within the token limit.
+    """
     assistant_marker = "<|im_start|>assistant\n"
     idx = text.find(assistant_marker)
     if idx == -1:
@@ -3205,6 +3865,14 @@ def smart_truncate(text, tokenizer, max_seq_length, verbose=True):
 ```python
 # ===================== SFT TRAINING =====================
 def load_jsonl(path: str) -> list[dict]:
+    """Load a JSONL file into a list of dicts.
+
+    Args:
+        path: Path to the JSONL file.
+
+    Returns:
+        List of parsed JSON dicts.
+    """
     samples: list[dict] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
