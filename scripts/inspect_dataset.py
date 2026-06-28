@@ -18,7 +18,16 @@ from typing import Any
 
 
 def _parse_ground_truth(gt: Any) -> dict | None:
-    """Normalise ground_truth from dict or JSON string. Mirrors clean_dataset.py."""
+    """Normalise ground_truth from dict or JSON string.
+
+    Mirrors clean_dataset.py._parse_ground_truth.
+
+    Args:
+        gt: Raw ground_truth value (dict or JSON string).
+
+    Returns:
+        Parsed dict, or None if unusable.
+    """
     if isinstance(gt, str):
         try:
             gt = json.loads(gt)
@@ -28,7 +37,14 @@ def _parse_ground_truth(gt: Any) -> dict | None:
 
 
 def extract_calls(gt: Any) -> list[dict]:
-    """Return the calls list from ground_truth, or empty list if unparseable."""
+    """Return the calls list from ground_truth.
+
+    Args:
+        gt: Raw ground_truth value (dict or JSON string).
+
+    Returns:
+        List of call dicts, or empty list if unparseable.
+    """
     parsed = _parse_ground_truth(gt)
     if parsed is None:
         return []
@@ -37,7 +53,14 @@ def extract_calls(gt: Any) -> list[dict]:
 
 
 def extract_function_names(sample: dict) -> list[str]:
-    """Return function names from ground_truth calls, or ['<missing>']."""
+    """Extract function names from ground_truth calls.
+
+    Args:
+        sample: Dataset sample dict.
+
+    Returns:
+        List of function names, or ['<missing>'] if unparseable.
+    """
     calls = extract_calls(sample.get("ground_truth"))
     if not calls:
         return ["<missing>"]
@@ -45,8 +68,15 @@ def extract_function_names(sample: dict) -> list[str]:
     return names if names else ["<missing_function_name>"]
 
 
-def load_jsonl(path: Path) -> list[dict]:
-    """Load a JSONL file, skipping malformed lines with a warning."""
+def load_jsonl(path: Path) -> list[dict] | None:
+    """Load a JSONL file, skipping malformed lines with a warning.
+
+    Args:
+        path: Path to JSONL file.
+
+    Returns:
+        List of parsed dicts, or None if file not found.
+    """
     samples = []
     if not path.exists():
         print(f"ERROR: file not found: {path}", file=sys.stderr)
@@ -67,7 +97,14 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def load_json(path: Path) -> dict | None:
-    """Load a JSON file, return None if missing."""
+    """Load a JSON file.
+
+    Args:
+        path: Path to JSON file.
+
+    Returns:
+        Parsed dict, or None if file not found.
+    """
     if not path.exists():
         print(f"ERROR: file not found: {path}", file=sys.stderr)
         return None
@@ -76,7 +113,11 @@ def load_json(path: Path) -> dict | None:
 
 
 def print_section(title: str) -> None:
-    """Print a section header."""
+    """Print a section header surrounded by horizontal rules.
+
+    Args:
+        title: Section title text.
+    """
     print()
     print("─" * 60)
     print(f"  {title}")
@@ -84,7 +125,18 @@ def print_section(title: str) -> None:
 
 
 def inspect_all(data_dir: str) -> int:
-    """Run all inspection checks and print results. Returns exit code."""
+    """Run all inspection checks and print results.
+
+    Checks sample counts, workflow distribution, function frequency,
+    ground truth call stats, argument value coverage, and data quality
+    warnings (cross-split leakage, empty calls).
+
+    Args:
+        data_dir: Path to the data directory.
+
+    Returns:
+        Exit code (0 for success, 1 for failure).
+    """
     data_path = Path(data_dir)
 
     # ── Load data ──────────────────────────────────────────────────────
@@ -261,7 +313,8 @@ def inspect_all(data_dir: str) -> int:
     return 0
 
 
-def main():
+def main() -> None:
+    """CLI entry point: inspect dataset statistics."""
     parser = argparse.ArgumentParser(
         description="Inspect toolformer dataset statistics"
     )

@@ -26,7 +26,15 @@ import pandas as pd
 
 
 def _safe_json(value: Any, fallback: Any = None) -> Any:
-    """Parse a cell that may contain JSON or a Python literal."""
+    """Parse a cell that may contain JSON or a Python literal.
+
+    Args:
+        value: Raw cell value to parse.
+        fallback: Default value returned if parsing fails.
+
+    Returns:
+        Parsed JSON/Python object, or fallback on failure.
+    """
     if not isinstance(value, str) or not value.strip():
         return fallback
     try:
@@ -39,7 +47,14 @@ def _safe_json(value: Any, fallback: Any = None) -> Any:
 
 
 def _safe_list(value: Any) -> list[str]:
-    """Parse a cell that may contain a list (JSON or comma-separated)."""
+    """Parse a cell that may contain a list (JSON or comma-separated).
+
+    Args:
+        value: Raw cell value to parse.
+
+    Returns:
+        List of strings parsed from JSON array or comma-separated text.
+    """
     result = _safe_json(value, fallback=None)
     if isinstance(result, list):
         return result
@@ -51,15 +66,22 @@ def _safe_list(value: Any) -> list[str]:
 def parse_telecom_functions(
     excel_path: str, output_path: Optional[str] = None
 ) -> dict[str, dict[str, Any]]:
-    """
-    Parse an Excel workbook containing telecom function definitions.
+    """Parse an Excel workbook containing telecom function definitions.
 
-    Expected columns:
-      function_name, description, parameters,
-      example_queries (optional), domain_info (optional),
-      constraints (optional), tags (optional)
+    Expected columns: function_name, description, parameters,
+    example_queries (optional), domain_info (optional),
+    constraints (optional), tags (optional).
 
-    Returns a dict of {function_name: schema_dict}.
+    Args:
+        excel_path: Path to the .xlsx file.
+        output_path: If provided, saves the parsed library as JSON.
+
+    Returns:
+        Dict of {function_name: schema_dict}.
+
+    Raises:
+        FileNotFoundError: If the Excel file does not exist.
+        ValueError: If required columns are missing.
     """
     path = Path(excel_path)
     if not path.exists():
@@ -105,11 +127,27 @@ def parse_telecom_functions(
 
 
 def load_function_library(library_path: str) -> dict[str, Any]:
-    """Load a pre-saved JSON function library."""
+    """Load a pre-saved JSON function library.
+
+    Args:
+        library_path: Path to the JSON function library file.
+
+    Returns:
+        Dict mapping function names to their schema definitions.
+    """
     with open(library_path, "r", encoding="utf-8") as fh:
         return dict(json.load(fh))
 
 
 def load_function_schema(schema_path: str) -> dict[str, Any]:
-    """Load a function_schema.json file (alias for load_function_library)."""
+    """Load a function_schema.json file.
+
+    Alias for load_function_library.
+
+    Args:
+        schema_path: Path to the schema JSON file.
+
+    Returns:
+        Dict mapping function names to their schema definitions.
+    """
     return load_function_library(schema_path)

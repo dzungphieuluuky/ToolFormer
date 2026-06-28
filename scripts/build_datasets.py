@@ -35,6 +35,14 @@ REWARD_TOKENS = [HIGH_REWARD_TOKEN, LOW_REWARD_TOKEN]
 
 
 def binary_reward_to_token(reward: int) -> str:
+    """Convert binary reward to its corresponding token string.
+
+    Args:
+        reward: Binary reward value (0 or 1).
+
+    Returns:
+        High-reward token for 1, low-reward token for 0.
+    """
     assert reward in (0, 1), "Reward must be binary (0 or 1)."
     return HIGH_REWARD_TOKEN if reward == 1 else LOW_REWARD_TOKEN
 
@@ -46,6 +54,15 @@ def apply_chat_template(
     messages: list[dict[str, str]],
     add_generation_prompt: bool = False,
 ) -> str:
+    """Format a list of message dicts into a chat template string.
+
+    Args:
+        messages: List of dicts with 'role' and 'content' keys.
+        add_generation_prompt: If True, appends the assistant start token.
+
+    Returns:
+        Concatenated chat-formatted string with role markers.
+    """
     parts: list[str] = []
     for msg in messages:
         role = msg.get("role", "")
@@ -109,6 +126,14 @@ STRICT RULES:
 
 
 def normalize_ground_truth(gt: Any) -> dict:
+    """Normalise ground truth to a canonical dict with 'calls' and 'reasoning'.
+
+    Args:
+        gt: Raw ground truth value, expected to be a dict.
+
+    Returns:
+        Normalised dict with 'calls' (list) and 'reasoning' (str) keys.
+    """
     if not isinstance(gt, dict):
         return {}
     calls = gt.get("calls", [])
@@ -131,6 +156,15 @@ def normalize_ground_truth(gt: Any) -> dict:
 
 
 def build_function_description(func_name: str, schema: dict) -> str:
+    """Build a human-readable description of a function from its schema.
+
+    Args:
+        func_name: Name of the function.
+        schema: Function schema dict with 'description', 'parameters', 'constraints'.
+
+    Returns:
+        Formatted string with name, description, parameters, and constraints.
+    """
     lines = [f"### {func_name}"]
     lines.append(
         f"Description: {schema.get('description', 'No description available')}"
@@ -163,6 +197,14 @@ def build_function_description(func_name: str, schema: dict) -> str:
 
 
 def build_argument_values_block(argument_values: dict[str, list]) -> str:
+    """Build a formatted block of relevant argument values for the prompt.
+
+    Args:
+        argument_values: Dict mapping parameter names to lists of value dicts.
+
+    Returns:
+        Formatted string, or empty string if no argument values provided.
+    """
     if not argument_values:
         return ""
     lines = ["## Relevant Argument Values"]
@@ -191,6 +233,17 @@ def build_retriever_block(
     argument_values: dict[str, list] | None = None,
     include_all_threshold: int = 10,
 ) -> str:
+    """Build the retriever block listing available functions and argument values.
+
+    Args:
+        function_names: Names of functions to include.
+        function_library: Dict of all function schemas.
+        argument_values: Optional dict of relevant argument values.
+        include_all_threshold: Max values to include before truncation.
+
+    Returns:
+        Formatted retriever block string.
+    """
     lines = ["## Available Functions\n"]
     for fn in function_names:
         if fn in function_library:
@@ -228,6 +281,18 @@ def build_messages_for_grpo(
     argument_values: dict[str, list] | None = None,
     include_all_threshold: int = 10,
 ) -> list[dict[str, str]]:
+    """Build the message list for GRPO/RC-GRPO training (system + user + retriever).
+
+    Args:
+        query: The user's natural-language query.
+        function_names: Retrieved function names to include.
+        function_library: Dict of function schemas.
+        argument_values: Optional argument values for the retriever block.
+        include_all_threshold: Threshold for including all values.
+
+    Returns:
+        List of message dicts with roles and content.
+    """
     retriever_content = build_retriever_block(
         function_names,
         function_library,
@@ -248,6 +313,18 @@ def build_messages_for_sft(
     ground_truth: dict,
     argument_values: dict[str, list] | None = None,
 ) -> list[dict[str, str]]:
+    """Build the full message list for SFT training, including the assistant response.
+
+    Args:
+        query: The user's natural-language query.
+        function_names: Retrieved function names to include.
+        function_library: Dict of function schemas.
+        ground_truth: Dict with 'calls' and 'reasoning' keys.
+        argument_values: Optional argument values for the retriever block.
+
+    Returns:
+        List of message dicts including the gold assistant response.
+    """
     messages = build_messages_for_grpo(
         query, function_names, function_library, argument_values
     )
@@ -280,6 +357,14 @@ def build_messages_for_sft(
 
 
 def build_gold_response(ground_truth: dict) -> str:
+    """Build the gold assistant response text from ground truth.
+
+    Args:
+        ground_truth: Dict with 'calls' and 'reasoning' keys.
+
+    Returns:
+        Formatted response string with reasoning and tool call blocks.
+    """
     gt = normalize_ground_truth(ground_truth)
     calls = gt.get("calls", [])
     if not calls:
@@ -305,12 +390,21 @@ def build_gold_response(ground_truth: dict) -> str:
 
 @dataclass
 class Trajectory:
+    """A training trajectory with prompt, response, and reward signal.
+
+    Attributes:
+        prompt_messages: List of message dicts forming the prompt.
+        response_text: The model response text.
+        reward: Binary reward (0 or 1).
+        reward_token: Auto-computed reward token string.
+    """
     prompt_messages: list[dict[str, str]]
     response_text: str
     reward: int
     reward_token: str = field(init=False)
 
     def __post_init__(self):
+        """Set reward_token based on the binary reward value."""
         self.reward_token = binary_reward_to_token(self.reward)
 
 
@@ -318,6 +412,14 @@ class Trajectory:
 
 
 def build_failure_response(failure_gt: dict) -> str:
+    """Build a failure response text from failure ground truth.
+
+    Args:
+        failure_gt: Dict with 'calls' and 'reasoning' keys (corrupted).
+
+    Returns:
+        Formatted response string with reasoning and tool call blocks.
+    """
     gt = normalize_ground_truth(failure_gt)
     calls = gt.get("calls", [])
     if not calls:
@@ -342,6 +444,14 @@ def build_failure_response(failure_gt: dict) -> str:
 
 
 def load_jsonl(path: str) -> list[dict]:
+    """Load a JSON Lines file into a list of dicts.
+
+    Args:
+        path: Path to the JSONL file.
+
+    Returns:
+        List of parsed JSON dicts.
+    """
     samples: list[dict] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -352,11 +462,25 @@ def load_jsonl(path: str) -> list[dict]:
 
 
 def load_json(path: str) -> dict:
+    """Load a JSON file into a dict.
+
+    Args:
+        path: Path to the JSON file.
+
+    Returns:
+        Parsed JSON dict.
+    """
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def write_jsonl(path: str, records: list[dict]) -> None:
+    """Write a list of dicts to a JSON Lines file.
+
+    Args:
+        path: Output path for the JSONL file.
+        records: List of dicts to write.
+    """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         for rec in records:
@@ -372,6 +496,19 @@ def build_sft_dataset(
     function_library: dict,
     argument_values: dict,
 ) -> list[dict]:
+    """Build the SFT dataset from gold samples.
+
+    Each sample produces a complete chat-formatted text string including
+    the gold assistant response.
+
+    Args:
+        samples: List of preprocessed dataset samples.
+        function_library: Dict mapping function names to schemas.
+        argument_values: Dict of argument value catalogs.
+
+    Returns:
+        List of dicts with 'text' key for SFT training.
+    """
     records = []
     for sample in samples:
         query = sample["query"]
@@ -391,6 +528,19 @@ def build_grpo_dataset(
     function_library: dict,
     argument_values: dict,
 ) -> list[dict]:
+    """Build the GRPO/RC-GRPO dataset from gold samples.
+
+    Each sample produces a prompt, serialized ground truth, query, and
+    workflow type for GRPO training.
+
+    Args:
+        samples: List of preprocessed dataset samples.
+        function_library: Dict mapping function names to schemas.
+        argument_values: Dict of argument value catalogs.
+
+    Returns:
+        List of dicts with 'prompt', 'ground_truth', 'query', 'workflow_type'.
+    """
     records = []
     for sample in samples:
         query = sample["query"]
@@ -420,6 +570,21 @@ def build_rctp_dataset(
     argument_values: dict,
     failures_per_expert: int = 1,
 ) -> list[Trajectory]:
+    """Build the RCTP dataset from gold samples and failure trajectories.
+
+    Each gold sample produces one expert trajectory (reward=1) and up to
+    `failures_per_expert` failure trajectories (reward=0) matched by ID.
+
+    Args:
+        samples: List of gold dataset samples.
+        failures: List of failure records with matching IDs.
+        function_library: Dict mapping function names to schemas.
+        argument_values: Dict of argument value catalogs.
+        failures_per_expert: Number of failure trajectories per expert (default: 1).
+
+    Returns:
+        List of Trajectory objects with balanced expert/failure samples.
+    """
     failure_by_id: dict[str, list[dict]] = {}
     for fs in failures:
         fs_id = fs.get("id")
@@ -476,6 +641,15 @@ def build_rctp_dataset(
 
 
 def validate_sft(records: list[dict], expected_count: int) -> list[str]:
+    """Validate SFT dataset records.
+
+    Args:
+        records: List of SFT record dicts.
+        expected_count: Expected number of records.
+
+    Returns:
+        List of error messages (empty if valid).
+    """
     errs = []
     if len(records) != expected_count:
         errs.append(f"sft: expected {expected_count} records, got {len(records)}")
@@ -488,6 +662,15 @@ def validate_sft(records: list[dict], expected_count: int) -> list[str]:
 
 
 def validate_grpo(records: list[dict], expected_count: int) -> list[str]:
+    """Validate GRPO/RC-GRPO dataset records.
+
+    Args:
+        records: List of GRPO record dicts.
+        expected_count: Expected number of records.
+
+    Returns:
+        List of error messages (empty if valid).
+    """
     errs = []
     if len(records) != expected_count:
         errs.append(f"grpo: expected {expected_count} records, got {len(records)}")
@@ -511,6 +694,15 @@ def validate_grpo(records: list[dict], expected_count: int) -> list[str]:
 
 
 def validate_rctp(records: list[Trajectory], min_count: int) -> list[str]:
+    """Validate RCTP dataset trajectories.
+
+    Args:
+        records: List of Trajectory objects.
+        min_count: Minimum expected number of records.
+
+    Returns:
+        List of error messages (empty if valid).
+    """
     errs = []
     if len(records) < min_count:
         errs.append(f"rctp: expected at least {min_count} records, got {len(records)}")
@@ -542,6 +734,11 @@ def validate_rctp(records: list[Trajectory], min_count: int) -> list[str]:
 
 
 def main() -> None:
+    """Entry point: parse args, load data, build all datasets, validate, and save.
+
+    Builds SFT, GRPO, RC-GRPO, and RCTP dataset files from gold data and
+    failure trajectories. Validates each output and logs a summary.
+    """
     parser = argparse.ArgumentParser(
         description="Build SFT, RCTP, GRPO, and RC-GRPO dataset files from gold data + failures."
     )

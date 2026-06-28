@@ -90,19 +90,21 @@ _VN_STOPWORDS = frozenset(
 
 @lru_cache(maxsize=8192)
 def normalize_vietnamese(text: str) -> str:
-    """
-    Full normalization pipeline:
-      1. Lowercase
-      2. Vietnamese-specific char map (đ → d)
-      3. NFKD decomposition (strips combining diacritics: ắ → a)
-      4. Remove remaining combining characters
-      5. Remove non-alphanumeric except spaces
-      6. Collapse whitespace
-      7. Strip
+    """Full Vietnamese normalization pipeline.
 
-    "Hà Nội"   → "ha noi"
-    "Đà Nẵng"  → "da nang"
-    "Thành phố Hồ Chí Minh" → "thanh pho ho chi minh"
+    Steps: lowercase, Vietnamese char map (đ→d), NFKD diacritic stripping,
+    remove non-alphanumeric, collapse whitespace, strip.
+
+    Examples:
+        "Hà Nội"   → "ha noi"
+        "Đà Nẵng"  → "da nang"
+        "Thành phố Hồ Chí Minh" → "thanh pho ho chi minh"
+
+    Args:
+        text: Raw input string with potential diacritics.
+
+    Returns:
+        Normalized, ASCII-only lowercase string.
     """
     text = text.lower()
 
@@ -126,9 +128,15 @@ def normalize_vietnamese(text: str) -> str:
 
 
 def expand_synonyms(text_normalized: str) -> str:
-    """
-    Expand Vietnamese abbreviations in already-normalized text.
+    """Expand Vietnamese abbreviations in already-normalized text.
+
     "tp hcm" → "thanh pho ho chi minh"
+
+    Args:
+        text_normalized: Pre-normalized lowercase text.
+
+    Returns:
+        Text with abbreviations expanded to full forms.
     """
     tokens = text_normalized.split()
     expanded: list[str] = []
@@ -141,15 +149,29 @@ def expand_synonyms(text_normalized: str) -> str:
 
 
 def tokenize_meaningful(text_normalized: str, min_len: int = 2) -> set[str]:
-    """
-    Extract meaningful tokens (skip stopwords and very short tokens).
+    """Extract meaningful tokens, skipping stopwords and short tokens.
+
+    Args:
+        text_normalized: Pre-normalized text.
+        min_len: Minimum token length to include.
+
+    Returns:
+        Set of meaningful tokens.
     """
     tokens = text_normalized.split()
     return {t for t in tokens if len(t) >= min_len and t not in _VN_STOPWORDS}
 
 
 def build_ngrams(text: str, n: int = 2) -> set[str]:
-    """Character n-grams for fuzzy matching on short codes."""
+    """Build character n-grams for fuzzy matching on short codes.
+
+    Args:
+        text: Input string (whitespace removed internally).
+        n: N-gram size (default: 2 for bigrams).
+
+    Returns:
+        Set of character n-grams.
+    """
     text = text.replace(" ", "")
     if len(text) < n:
         return {text}

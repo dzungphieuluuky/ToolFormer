@@ -31,9 +31,19 @@ def pick_top5(
     retriever: FunctionRetriever,
     name_to_idx: dict[str, int],
 ) -> list[str]:
-    """From candidate_fns, keep top 5 most relevant to query by BM25 score.
+    """Keep top 5 most relevant functions by BM25 score.
 
     Always retains the ground-truth function if it was in the candidates.
+
+    Args:
+        query: User query string.
+        candidate_fns: List of candidate function names to re-rank.
+        ground_truth: Gold annotation dict with "calls" list.
+        retriever: FunctionRetriever instance for scoring.
+        name_to_idx: Mapping from function name to retriever index.
+
+    Returns:
+        Top 5 function names, always including the ground truth.
     """
     if not candidate_fns:
         return []
@@ -68,8 +78,16 @@ def process_file(
     retriever: FunctionRetriever,
     name_to_idx: dict[str, int],
     label: str,
-):
-    """Load JSONL, re-rank retrieved_functions, save to output_path."""
+) -> None:
+    """Load JSONL, re-rank retrieved_functions, save to output_path.
+
+    Args:
+        input_path: Input JSONL file path.
+        output_path: Output JSONL file path.
+        retriever: FunctionRetriever for BM25 scoring.
+        name_to_idx: Mapping from function name to retriever index.
+        label: Human-readable label (e.g. "train", "test") for logging.
+    """
     samples = []
     with open(input_path) as f:
         for line in f:
@@ -121,7 +139,8 @@ def process_file(
     print(f"  GT retained:     {gt_retained}/{gt_total}  ({gt_retained/max(gt_total,1)*100:.1f}%)")
 
 
-def main():
+def main() -> None:
+    """CLI entry point: re-rank retrieved functions to top 5 per sample."""
     import argparse
 
     parser = argparse.ArgumentParser(

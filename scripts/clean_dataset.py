@@ -37,9 +37,13 @@ from typing import Any
 
 
 def _parse_ground_truth(gt: Any) -> dict | None:
-    """Normalise ground_truth from dict or JSON string to a dict with a 'calls' list.
+    """Normalise ground_truth from dict or JSON string to a dict with 'calls' list.
 
-    Returns None if the value is unusable (not a dict after parsing).
+    Args:
+        gt: Raw ground_truth value (dict or JSON string).
+
+    Returns:
+        Parsed dict, or None if unusable.
     """
     if isinstance(gt, str):
         try:
@@ -55,7 +59,14 @@ def _parse_ground_truth(gt: Any) -> dict | None:
 
 
 def _standardize_sample(sample: dict) -> dict:
-    """Strip legacy fields (function_name, ground_truth.workflow) in-place."""
+    """Strip legacy fields (function_name, ground_truth.workflow) in-place.
+
+    Args:
+        sample: Dataset sample dict to standardize in-place.
+
+    Returns:
+        The same sample dict for convenience.
+    """
     sample.pop("function_name", None)
     gt = sample.get("ground_truth")
     if isinstance(gt, dict):
@@ -67,10 +78,19 @@ def _standardize_sample(sample: dict) -> dict:
 
 
 def validate_sample(sample: dict, function_library: dict) -> tuple[bool, str]:
-    """Returns (is_valid, rejection_reason).
+    """Validate a dataset sample against the function library.
 
-    Rejection reasons are short machine-readable strings so the report can
-    aggregate counts and sample IDs per category.
+    Checks workflow_type, call count, function existence, argument schema
+    conformance (required params, enums, types). Returns machine-readable
+    rejection reasons for report aggregation.
+
+    Args:
+        sample: Dataset sample dict.
+        function_library: Dict of function_name → schema.
+
+    Returns:
+        Tuple of (is_valid: bool, rejection_reason: str).
+        Empty rejection_reason string means valid.
     """
     # 1. workflow_type must be one of the three allowed values
     wt = sample.get("workflow_type")
@@ -161,7 +181,15 @@ def clean_split(
     input_path: Path,
     function_library: dict,
 ) -> tuple[list[dict], dict[str, Any]]:
-    """Process one JSONL file and return (valid_samples, stats)."""
+    """Process one JSONL file: parse, deduplicate, validate, standardize.
+
+    Args:
+        input_path: Path to JSONL file.
+        function_library: Dict of function_name → schema.
+
+    Returns:
+        Tuple of (list of valid samples, stats dict with detailed counts).
+    """
     stats: dict[str, Any] = {
         "total_lines": 0,
         "malformed_json_lines": [],
@@ -229,7 +257,12 @@ def clean_split(
 
 
 def write_report(stats: dict[str, Any], output_dir: Path) -> None:
-    """Write clean_report.json with human-readable and aggregated stats."""
+    """Write clean_report.json with human-readable and aggregated stats.
+
+    Args:
+        stats: Dict of split_name → split_stats from clean_split.
+        output_dir: Directory to write the report file into.
+    """
     report: dict[str, Any] = {}
 
     for split_name, split_stats in stats.items():
@@ -284,7 +317,11 @@ def write_report(stats: dict[str, Any], output_dir: Path) -> None:
 
 
 def print_summary(stats: dict[str, Any]) -> None:
-    """Print a concise summary to stdout."""
+    """Print a concise per-split and total summary to stdout.
+
+    Args:
+        stats: Dict of split_name → split_stats from clean_split.
+    """
     grand_in = 0
     grand_out = 0
     for split_name, s in stats.items():
@@ -312,6 +349,7 @@ def print_summary(stats: dict[str, Any]) -> None:
 
 
 def main() -> None:
+    """CLI entry point: validate, clean, and report on dataset JSONL files."""
     parser = argparse.ArgumentParser(
         description="Strict validation & cleanup of toolformer dataset JSONL files."
     )

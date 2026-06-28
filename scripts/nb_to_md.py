@@ -20,7 +20,15 @@ from typing import TextIO
 
 
 def extract_cell_number(cell: dict, nb: dict) -> int:
-    """Return the execution count for a code cell, or 0 for markdown."""
+    """Return the execution count for a code cell, or 0 for markdown.
+
+    Args:
+        cell: Notebook cell dict.
+        nb: Full notebook dict (unused, kept for API consistency).
+
+    Returns:
+        Execution count integer, or 0 for markdown cells.
+    """
     ec = cell.get("execution_count")
     if isinstance(ec, int):
         return ec
@@ -28,7 +36,14 @@ def extract_cell_number(cell: dict, nb: dict) -> int:
 
 
 def clean_source(source_lines: list[str]) -> str:
-    """Join notebook source lines, adding trailing newline if missing."""
+    """Join notebook source lines, adding trailing newline if missing.
+
+    Args:
+        source_lines: List of source code lines from a notebook cell.
+
+    Returns:
+        Joined source string with trailing newlines preserved.
+    """
     result = []
     for line in source_lines:
         if line and not line.endswith("\n"):
@@ -38,7 +53,14 @@ def clean_source(source_lines: list[str]) -> str:
 
 
 def tag_for_section(source: str) -> str | None:
-    """Detect section header from `# =====` comment lines in code."""
+    """Detect section header from ``# =====`` comment lines in code.
+
+    Args:
+        source: Code cell source text.
+
+    Returns:
+        Section tag string if found, None otherwise.
+    """
     m = re.search(r"# ={5,}\s*(.+?)\s*={5,}", source)
     if m:
         tag = m.group(1).strip()
@@ -49,7 +71,17 @@ def tag_for_section(source: str) -> str | None:
 
 
 def should_skip_cell(source: str) -> bool:
-    """Skip boilerplate cells (pip installs, dataset downloads, etc.)."""
+    """Determine if a code cell is boilerplate (pip installs, git clones, etc.).
+
+    Filters out cells that only contain pip installs, empty content,
+    or git clone commands.
+
+    Args:
+        source: Code cell source text.
+
+    Returns:
+        True if the cell should be skipped, False otherwise.
+    """
     lines = source.strip().splitlines()
     if not lines:
         return True
@@ -67,7 +99,17 @@ def should_skip_cell(source: str) -> bool:
 
 
 def format_output(output: dict) -> str | None:
-    """Format a single cell output to markdown."""
+    """Format a single cell output to markdown text.
+
+    Handles stream, execute_result, display_data, and error output types.
+    Strips ANSI escape codes and truncates long outputs.
+
+    Args:
+        output: Notebook cell output dict with output_type, text, data, etc.
+
+    Returns:
+        Formatted markdown string, or None if output should be skipped.
+    """
     otype = output.get("output_type")
     text = ""
 
@@ -105,9 +147,18 @@ def format_output(output: dict) -> str | None:
 def convert_nb_to_md(
     notebook_path: str, output_path: str, include_outputs: bool = False
 ) -> dict:
-    """Convert a Jupyter notebook to markdown.
+    """Convert a Jupyter notebook to a structured markdown document.
 
-    Returns stats dict.
+    Extracts code cells with preceding markdown context, detects section
+    headers, and optionally includes cell outputs.
+
+    Args:
+        notebook_path: Path to the .ipynb file.
+        output_path: Path for the output .md file.
+        include_outputs: Whether to include cell execution outputs.
+
+    Returns:
+        Stats dict with counts of markdown, code, skipped cells, and outputs.
     """
     with open(notebook_path, "r", encoding="utf-8") as f:
         nb = json.load(f)
@@ -193,6 +244,11 @@ def convert_nb_to_md(
 
 
 def print_stats(stats: dict) -> None:
+    """Print conversion statistics to stdout.
+
+    Args:
+        stats: Dict with keys: total, markdown, code, skipped, outputs.
+    """
     print("\n=== Conversion Stats ===")
     print(f"  Total cells:  {stats['total']}")
     print(f"  Markdown:     {stats['markdown']}")

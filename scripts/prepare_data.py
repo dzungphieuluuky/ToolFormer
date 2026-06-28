@@ -54,10 +54,22 @@ def split_library(
     test_funcs: list[str] | None = None,
     reserved_test_functions: int = 5,
 ) -> tuple[dict, dict]:
-    """
-    Split function library into train and test dictionaries.
+    """Split function library into train and test dictionaries.
+
     If test_funcs is provided, use that list; otherwise randomly reserve
-    `reserved_test_functions` names.
+    ``reserved_test_functions`` names.
+
+    Args:
+        library: Full function library dict.
+        test_funcs: Optional explicit list of test function names.
+        reserved_test_functions: Number of functions to reserve for test
+            if test_funcs is not provided.
+
+    Returns:
+        Tuple of (train_library, test_library).
+
+    Raises:
+        ValueError: If any test_funcs are not in the library.
     """
     func_names = list(library.keys())
     if test_funcs is None:
@@ -81,11 +93,16 @@ def enrich_dataset_with_arg_values(
     val_retriever: ArgumentValueRetriever,
     function_library: dict,
 ) -> int:
-    """
-    Read raw_*.jsonl, add retrieved_argument_values to each sample,
-    write to output_path.
+    """Read raw JSONL, add retrieved_argument_values to each sample, write output.
 
-    Returns the number of samples that received at least one argument value.
+    Args:
+        raw_path: Path to raw JSONL input.
+        output_path: Path for enriched JSONL output.
+        val_retriever: ArgumentValueRetriever instance.
+        function_library: Dict of function_name → schema.
+
+    Returns:
+        Number of samples that received at least one argument value.
     """
     import jsonlines
 
@@ -143,7 +160,8 @@ def enrich_dataset_with_arg_values(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def main():
+def main() -> None:
+    """CLI entry point: orchestrate full data preparation pipeline."""
     parser = argparse.ArgumentParser(description="Prepare telecom tool-calling dataset")
     parser.add_argument("--config", default="config/base_config.yaml")
     parser.add_argument(

@@ -47,6 +47,14 @@ ARGVALUE_KEYS = {"code", "label", "group", "score"}
 
 
 def _load_jsonl(path: str) -> list[dict]:
+    """Load a JSON Lines file, returning None for unparseable lines.
+
+    Args:
+        path: Path to the JSONL file.
+
+    Returns:
+        List of parsed dicts, with None for lines that failed to parse.
+    """
     samples = []
     with open(path, "r", encoding="utf-8") as f:
         for lineno, line in enumerate(f, 1):
@@ -61,6 +69,14 @@ def _load_jsonl(path: str) -> list[dict]:
 
 
 def _load_json(path: str) -> dict:
+    """Load a JSON file into a dict.
+
+    Args:
+        path: Path to the JSON file.
+
+    Returns:
+        Parsed JSON dict.
+    """
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -69,6 +85,15 @@ def _load_json(path: str) -> dict:
 
 
 def check_required_fields(sample: dict, path: str) -> list[str]:
+    """Check that all required fields exist and are non-null.
+
+    Args:
+        sample: Dataset sample dict.
+        path: Source file path for error reporting.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     for field in REQUIRED_FIELDS:
         if field not in sample:
@@ -79,6 +104,14 @@ def check_required_fields(sample: dict, path: str) -> list[str]:
 
 
 def check_id(sample: dict) -> list[str]:
+    """Check that the sample ID is a valid UUID string.
+
+    Args:
+        sample: Dataset sample dict.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     val = sample.get("id")
     if not isinstance(val, str):
@@ -89,6 +122,14 @@ def check_id(sample: dict) -> list[str]:
 
 
 def check_query(sample: dict) -> list[str]:
+    """Check that the query field is a non-empty string.
+
+    Args:
+        sample: Dataset sample dict.
+
+    Returns:
+        List of error messages.
+    """
     val = sample.get("query")
     if not isinstance(val, str) or not val.strip():
         return ["query is empty or not a string"]
@@ -96,6 +137,14 @@ def check_query(sample: dict) -> list[str]:
 
 
 def check_workflow_type(sample: dict) -> list[str]:
+    """Check that the workflow_type is one of the valid values.
+
+    Args:
+        sample: Dataset sample dict.
+
+    Returns:
+        List of error messages.
+    """
     val = sample.get("workflow_type")
     if val not in VALID_WORKFLOWS:
         return [f"invalid workflow_type: {val!r} (expected one of {VALID_WORKFLOWS})"]
@@ -103,6 +152,14 @@ def check_workflow_type(sample: dict) -> list[str]:
 
 
 def check_split(sample: dict) -> list[str]:
+    """Check that the split field is one of the valid values.
+
+    Args:
+        sample: Dataset sample dict.
+
+    Returns:
+        List of error messages.
+    """
     val = sample.get("split")
     if val not in VALID_SPLITS:
         return [f"invalid split: {val!r} (expected one of {VALID_SPLITS})"]
@@ -110,6 +167,14 @@ def check_split(sample: dict) -> list[str]:
 
 
 def check_ground_truth(sample: dict) -> list[str]:
+    """Check that ground_truth is a dict with valid 'calls' and 'reasoning'.
+
+    Args:
+        sample: Dataset sample dict.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     gt = sample.get("ground_truth")
     if not isinstance(gt, dict):
@@ -140,7 +205,17 @@ def check_ground_truth(sample: dict) -> list[str]:
 
 
 def check_ground_truth_calls_args(sample: dict, function_library: dict) -> list[str]:
-    """Validate call arguments against function schemas."""
+    """Validate call arguments against function schemas.
+
+    Checks required params, unexpected params, enum violations, and date format.
+
+    Args:
+        sample: Dataset sample dict.
+        function_library: Dict mapping function names to schemas.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     gt = sample.get("ground_truth")
     if not isinstance(gt, dict):
@@ -197,6 +272,15 @@ def check_ground_truth_calls_args(sample: dict, function_library: dict) -> list[
 
 
 def check_function_name(sample: dict, function_library: dict) -> list[str]:
+    """Check that all called functions exist in the function library.
+
+    Args:
+        sample: Dataset sample dict.
+        function_library: Dict mapping function names to schemas.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     calls = sample.get("ground_truth", {}).get("calls", [])
     for ci, call in enumerate(calls):
@@ -211,6 +295,15 @@ def check_function_name(sample: dict, function_library: dict) -> list[str]:
 
 
 def check_retrieved_functions(sample: dict, function_library: dict) -> list[str]:
+    """Check that retrieved functions exist and are valid.
+
+    Args:
+        sample: Dataset sample dict.
+        function_library: Dict mapping function names to schemas.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     rf = sample.get("retrieved_functions")
     if not isinstance(rf, list):
@@ -226,6 +319,15 @@ def check_retrieved_functions(sample: dict, function_library: dict) -> list[str]
 
 
 def check_retrieved_argument_values(sample: dict, argument_values: dict) -> list[str]:
+    """Check that retrieved argument values have valid structure and scores.
+
+    Args:
+        sample: Dataset sample dict.
+        argument_values: Dict of valid argument value catalogs.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     rav = sample.get("retrieved_argument_values")
     if rav is None:
@@ -263,6 +365,15 @@ def check_retrieved_argument_values(sample: dict, argument_values: dict) -> list
 def check_duplicate_ids(
     train_samples: list[dict], test_samples: list[dict]
 ) -> list[str]:
+    """Check for duplicate sample IDs across train and test splits.
+
+    Args:
+        train_samples: List of training samples.
+        test_samples: List of testing samples.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     seen: dict[str, str] = {}
     for path, samples in [("train", train_samples), ("test", test_samples)]:
@@ -284,6 +395,16 @@ def check_duplicate_ids(
 def check_cross_split_function_leakage(
     samples: list[dict], allowed_functions: set[str], split_name: str
 ) -> list[str]:
+    """Check that ground truth calls only use functions allowed in this split.
+
+    Args:
+        samples: List of dataset samples.
+        allowed_functions: Set of function names allowed in this split.
+        split_name: Name of the split for error reporting.
+
+    Returns:
+        List of error messages.
+    """
     errs = []
     for sample in samples:
         if sample is None:
@@ -307,7 +428,14 @@ def check_cross_split_function_leakage(
 
 
 def check_calls_nonempty(sample: dict) -> list[str]:
-    """Check that non-abstention samples have non-empty ground_truth.calls."""
+    """Check that non-abstention samples have non-empty ground_truth.calls.
+
+    Args:
+        sample: Dataset sample dict.
+
+    Returns:
+        List of error strings (empty if valid).
+    """
     errs = []
     wf = sample.get("workflow_type")
     if wf == "abstention":
@@ -328,6 +456,20 @@ def check_calls_nonempty(sample: dict) -> list[str]:
 
 
 def validate_all(data_dir: str, output_path: str | None = None) -> dict:
+    """Run all validation checks on train/test datasets.
+
+    Loads data files from ``data_dir``, runs schema validation, call
+    count checks, function existence checks, and argument validation.
+    Optionally saves a summary report.
+
+    Args:
+        data_dir: Directory containing dataset and schema files.
+        output_path: Optional path for the summary report JSON.
+
+    Returns:
+        Dict with validation results including passed/failed counts,
+        duplicate IDs, and cross-split leakage info.
+    """
     data_dir = Path(data_dir)
     processed_dir = data_dir
 
@@ -438,6 +580,12 @@ def validate_all(data_dir: str, output_path: str | None = None) -> dict:
 
 
 def _save_report(report: dict, path: str) -> None:
+    """Save a compact validation summary report (without per-sample details).
+
+    Args:
+        report: Full validation report dict.
+        path: Output JSON file path.
+    """
     # Remove per-sample details for compact saved report
     summary = {
         "summary": report["summary"],
@@ -457,6 +605,11 @@ def _save_report(report: dict, path: str) -> None:
 
 
 def print_summary(report: dict) -> None:
+    """Print a concise validation report to stdout.
+
+    Args:
+        report: Full validation report dict.
+    """
     print("=" * 60)
     print("  DATASET VALIDATION REPORT")
     print("=" * 60)

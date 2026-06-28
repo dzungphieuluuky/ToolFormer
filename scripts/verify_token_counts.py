@@ -5,7 +5,15 @@ import json
 import sys
 from pathlib import Path
 
-def load_jsonl(path):
+def load_jsonl(path: str) -> list[dict]:
+    """Load a JSONL file into a list of dicts.
+
+    Args:
+        path: Path to the JSONL file.
+
+    Returns:
+        List of parsed JSON objects.
+    """
     samples = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -14,7 +22,13 @@ def load_jsonl(path):
                 samples.append(json.loads(line))
     return samples
 
-def main():
+def main() -> None:
+    """Verify that all SFT samples fit within max_seq_length.
+
+    Loads the SFT dataset, tokenizes each sample, and checks whether
+    the assistant response is intact within the model's max sequence
+    length. Saves evidence to .omo/evidence/.
+    """
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained("unsloth/Qwen3-4B-Instruct-2507")

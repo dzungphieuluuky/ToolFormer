@@ -26,7 +26,17 @@ from scripts.vietnamese_normalizer import (
 
 @dataclass
 class CatalogEntry:
-    """One possible value for a parameter."""
+    """One possible value for a parameter.
+
+    Stores the raw code/label/group along with pre-computed normalized
+    forms used for efficient matching at retrieval time.
+
+    Attributes:
+        code: Short machine-readable code (e.g. "HNI").
+        label: Human-readable label (e.g. "Hà Nội").
+        group: Category/group name (e.g. "province").
+        alt_label: Alternative label for matching (e.g. "Ha Noi").
+    """
 
     code: str
     label: str
@@ -57,18 +67,19 @@ class CatalogEntry:
 
 @dataclass
 class ValueMatch:
-    """Result of value matching — serializable for JSON output."""
+    """Result of value matching — serializable for JSON output.
 
-    code: str
-    label: str
-    group: str
-    score: float = 0.0
-    alt_label: str = ""
+    Attributes:
+        code: Matched value code.
+        label: Human-readable label.
+        group: Category/group name.
+        score: Match confidence score (0.0 to 1.0).
+        alt_label: Alternative label if available.
+    """
 
 
 class ValueCatalog:
-    """
-    Manages argument value lookup for one parameter type.
+    """Manages argument value lookup for one parameter type.
 
     Matching priority:
       1. Exact code match in query (score=1.0 range)

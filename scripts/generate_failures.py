@@ -107,6 +107,9 @@ class TokenBucket:
     The bucket can accumulate up to ``rate_per_minute`` tokens (one minute of
     burst capacity), so short bursts within the limit are allowed while the
     long-term average is enforced.
+
+    Args:
+        rate_per_minute: Maximum sustained requests per minute.
     """
 
     def __init__(self, rate_per_minute: float) -> None:
@@ -117,7 +120,12 @@ class TokenBucket:
         self._lock = threading.Lock()
 
     def acquire(self) -> None:
-        """Block until a token is available."""
+        """Block until a token is available.
+
+        If the rate limit is 0 or negative, returns immediately (no limit).
+        """
+        if self._rate_per_sec <= 0:
+            return  # No rate limit
         if self._rate_per_sec <= 0:
             return  # No rate limit
         while True:
@@ -132,6 +140,7 @@ class TokenBucket:
             time.sleep(max(wait, 0.001))
 
     def _refill(self) -> None:
+        """Refill the token bucket based on elapsed time since last refill."""
         now = time.monotonic()
         elapsed = now - self._last_refill
         self._tokens = min(
@@ -159,7 +168,11 @@ _local = threading.local()
 
 
 def _rand() -> random.Random:
-    """Return a thread-local Random instance for thread-safe operations."""
+    """Return a thread-local Random instance for thread-safe operations.
+
+    Returns:
+        Thread-local random.Random instance.
+    """
     if not hasattr(_local, "rng"):
         _local.rng = random.Random()
     return _local.rng
@@ -169,17 +182,40 @@ def _rand() -> random.Random:
 
 
 def _load_jsonl(path: str) -> list[dict]:
+    """Load a JSONL file into a list of dicts.
+
+    Args:
+        path: Path to JSONL file.
+
+    Returns:
+        List of parsed JSON objects.
+    """
     with open(path, "r", encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
 
 def _load_json(path: str) -> dict:
+    """Load a JSON file into a dict.
+
+    Args:
+        path: Path to JSON file.
+
+    Returns:
+        Parsed JSON dict.
+    """
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def _validate_failure_record(failure: Any) -> bool:
-    """Check that a failure dict has the required keys for _build_record."""
+    """Check that a failure dict has the required keys for _build_record.
+
+    Args:
+        failure: Raw failure dict to validate.
+
+    Returns:
+        True if the dict has failure_type, tool_call, and reasoning keys.
+    """
     return (
         isinstance(failure, dict)
         and "failure_type" in failure
@@ -197,6 +233,20 @@ def _h_wrong_function(
     function_library: dict,
     catalog: dict,
 ) -> dict | None:
+    """Generate a wrong-function failure: pick a wrong function from candidates.
+
+    Tier 2 heuristic. Selects a different function from the retrieved list
+    and fills required args from the catalog.
+
+    Args:
+        sample: Gold dataset sample.
+        gold_call: The correct tool_call dict.
+        function_library: Dict of function_name → schema.
+        catalog: Argument value catalog dict.
+
+    Returns:
+        Failure dict with wrong function, or None if impossible.
+    """
     rng = _rand()
     gold_fn = gold_call["function"]
     retrieved = sample.get("retrieved_functions", [])
@@ -231,6 +281,19 @@ def _h_wrong_value(
     function_library: dict,
     catalog: dict,
 ) -> dict | None:
+    """Generate a wrong-value failure: keep correct fn, use wrong arg value.
+
+    Tier 2 heuristic. Picks a catalog value different from the gold value.
+
+    Args:
+        sample: Gold dataset sample.
+        gold_call: The correct tool_call dict.
+        function_library: Dict of function_name → schema.
+        catalog: Argument value catalog dict.
+
+    Returns:
+        Failure dict with wrong argument value, or None if impossible.
+    """
     rng = _rand()
     gold_fn = gold_call["function"]
     gold_args = gold_call.get("arguments", {})
@@ -262,6 +325,20 @@ def _h_missing_arg(
     function_library: dict,
     catalog: dict,
 ) -> dict | None:
+    """Generate a missing-argument failure: drop a non-required parameter.
+
+    Tier 2 heuristic. Selects a non-required parameter from the schema
+    and removes it from the arguments.
+
+    Args:
+        sample: Gold dataset sample.
+        gold_call: The correct tool_call dict.
+        function_library: Dict of function_name → schema.
+        catalog: Argument value catalog dict.
+
+    Returns:
+        Failure dict with missing argument, or None if impossible.
+    """
     rng = _rand()
     gold_fn = gold_call["function"]
     gold_args = gold_call.get("arguments", {})
@@ -290,6 +367,20 @@ def _h_hallucinated_arg(
     function_library: dict,
     catalog: dict,
 ) -> dict | None:
+    """Generate a hallucinated-argument failure: add an invented parameter.
+
+    Tier 2 heuristic. Picks a parameter name from the hallucination pool
+    that doesn't exist in the gold args.
+
+    Args:
+        sample: Gold dataset sample.
+        gold_call: The correct tool_call dict.
+        function_library: Dict of function_name → schema.
+        catalog: Argument value catalog dict.
+
+    Returns:
+        Failure dict with hallucinated argument, or None if impossible.
+    """
     rng = _rand()
     gold_fn = gold_call["function"]
     gold_args = gold_call.get("arguments", {})
@@ -326,6 +417,20 @@ def _tier2_failure(
     catalog: dict,
     failure_type: str | None = None,
 ) -> dict | None:
+    """Generate a Tier 2 heuristic failure for a specific failure type.
+
+    Dispatches to the appropriate _h_* function based on failure_type.
+
+    Args:
+        sample: Gold dataset sample.
+        gold_call: The correct tool_call dict.
+        function_library: Dict of function_name → schema.
+        catalog: Argument value catalog dict.
+        failure_type: Specific failure type, or None to pick randomly.
+
+    Returns:
+        Failure dict, or None if the chosen type cannot be generated.
+    """
     if failure_type is None:
         failure_type = _rand().choice(FAILURE_TYPES)
     func = _TIER2_DISPATCH.get(failure_type)
@@ -344,6 +449,21 @@ def _tier3_failure(
     catalog: dict,
     failure_type: str | None = None,
 ) -> dict | None:
+    """Generate a Tier 3 legacy failure (__WRONG__ prefix behaviour).
+
+    Fallback heuristic that prefixes argument values with "__WRONG__"
+    or uses simple random selection.
+
+    Args:
+        sample: Gold dataset sample.
+        gold_call: The correct tool_call dict.
+        function_library: Dict of function_name → schema.
+        catalog: Argument value catalog dict.
+        failure_type: Specific failure type, or None to pick randomly.
+
+    Returns:
+        Failure dict, or None if the chosen type cannot be generated.
+    """
     rng = _rand()
     if failure_type is None:
         failure_type = rng.choice(FAILURE_TYPES)
@@ -392,6 +512,15 @@ def _tier3_failure(
 
 
 def _build_record(sample: dict, failure: dict) -> dict:
+    """Build a complete failure record from a sample and a failure dict.
+
+    Args:
+        sample: Original gold dataset sample.
+        failure: Failure dict with tool_call, failure_type, and reasoning.
+
+    Returns:
+        Complete failure record dict matching the output schema.
+    """
     tc = failure["tool_call"]
     ft = failure["failure_type"]
     return {
@@ -421,6 +550,22 @@ def _process_sample(
     tier1_generator: Any | None,
     rate_limiter: TokenBucket | None = None,
 ) -> list[dict]:
+    """Generate failure records for a single gold sample using three tiers.
+
+    Tries Tier 1 (LLM) first, then falls back to Tier 2 (heuristic),
+    then Tier 3 (legacy) for any remaining slots.
+
+    Args:
+        sample: Gold dataset sample.
+        function_library: Dict of function_name → schema.
+        catalog: Argument value catalog dict.
+        failures_per_sample: Number of failures to generate.
+        tier1_generator: Optional TelcoDatasetGenerator for LLM tier.
+        rate_limiter: Optional TokenBucket for rate limiting.
+
+    Returns:
+        List of failure record dicts.
+    """
     gold_calls = sample.get("ground_truth", {}).get("calls", [])
     if not gold_calls:
         return []
@@ -491,6 +636,25 @@ def generate_failures(
     requests_per_minute: int = 500,
     dry_run: bool = False,
 ) -> None:
+    """Generate failure samples using three-tier hybrid approach.
+
+    Tier 1: LLM via TelcoDatasetGenerator._call_failure()
+    Tier 2: Catalog-aware heuristic (inline)
+    Tier 3: Legacy __WRONG__ prefix behaviour
+
+    Args:
+        input_path: Path to gold dataset JSONL.
+        output_path: Path for output failure dataset JSONL.
+        train_schema_path: Path to train function schemas.
+        test_schema_path: Path to test function schemas.
+        catalog_path: Path to argument values catalog JSON.
+        failures_per_sample: Number of failures per gold sample.
+        provider: LLM provider for Tier 1.
+        model: LLM model name for Tier 1.
+        max_workers: Number of parallel worker threads.
+        requests_per_minute: Rate limit for Tier 1 LLM calls.
+        dry_run: If True, only log configuration without generating.
+    """
     samples = _load_jsonl(input_path)
     logger.info("Loaded %d samples from %s", len(samples), input_path)
 
@@ -652,6 +816,7 @@ def generate_failures(
 
 
 def main() -> None:
+    """CLI entry point: generate failure samples for RCTP training."""
     parser = argparse.ArgumentParser(
         description="Generate failure samples for RCTP training (three-tier hybrid)",
     )
