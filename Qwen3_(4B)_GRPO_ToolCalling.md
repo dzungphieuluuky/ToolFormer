@@ -3291,6 +3291,7 @@ FileLink("outputs/rctp_ft_model.zip")
 ```python
 if MODE in ("grpo", "rc_grpo"):
     # ===================== STAGE 2: RC-GRPO (or vanilla GRPO baseline) =====================
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"  # required by vLLM standby mode
     os.environ["UNSLOTH_VLLM_STANDBY"] = "1"  # vLLM standby mode — shares GPU with trainer
     print("\n" + "=" * 70)
     print(f"STAGE 2: {'RC-GRPO' if MODE == 'rc_grpo' else 'Vanilla GRPO baseline'}")
