@@ -2434,16 +2434,18 @@ def load_model(
         dtype=None,
         gpu_memory_utilization=gpu_memory_utilization if gpu_memory_utilization is not None else (0.3 if os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1" else 0.8),
     )
-    if adapter_model_path is None and not fast_inference and mode == "train":
+    if mode == "train":
         kwargs["max_lora_rank"] = lora_rank
 
     model, _ = FastLanguageModel.from_pretrained(**kwargs)
 
     # ── 4. Load adapter, base model only, or create fresh LoRA ────────
     if adapter_model_path is not None:
-        # Checkpoint resume: resize embeddings to match checkpoint tokenizer
+        # Checkpoint resume: wrap base model with adapter via PeftModel
+        # (Unsloth internal pattern: PeftModel.from_pretrained, not model.load_adapter)
+        from peft import PeftModel
         model.resize_token_embeddings(len(tokenizer))
-        model.load_adapter(adapter_model_path, adapter_name="default")
+        model = PeftModel.from_pretrained(model, adapter_model_path, is_trainable=(mode == "train"))
     elif mode == "inference":
         # Base model only (no adapter) — for benchmarking the base model
         pass

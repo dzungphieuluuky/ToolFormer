@@ -1,7 +1,7 @@
 # ToolFormer — Agent Guide
 
-**Updated:** 2026-06-27 — fixed `max_prompt_length` truncation, added `DATASET.md`
-**Commit:** `edb1444e` on `main`
+**Updated:** 2026-06-29 — fix `load_model` token order (Unsloth best practice), update Kaggle paths
+**Commit:** `a253f9a` on `main`
 
 Telecom tool-calling RL project: fine-tuning Qwen3-4B on function calling using RC-GRPO (Reward-Conditioned GRPO). Built on Unsloth + TRL. Pure research — no tests, no linter, no type checker, no CI, no git hooks.
 
@@ -70,9 +70,9 @@ The notebook has one `load_model()` function that handles all loading. Its branc
 
 | Condition | What happens | Used by |
 |-----------|-------------|---------|
-| `adapter_model_path` set + `mode="train"` | Tokenizer from checkpoint → load base (internal GRPO patching) → resize → `load_adapter()` | GRPO/RC-GRPO resume |
-| `adapter_model_path` set + `mode="inference"` | Tokenizer from checkpoint → load base → resize → `load_adapter()` → `for_inference()` | Evaluation from checkpoint |
-| `adapter_model_path=None` + `mode="train"` | Tokenizer from base model → load base → `get_peft_model` (fresh LoRA) → `patch_tokenizer_for_custom_roles` → resize | SFT/RCTP-FT from scratch |
+| `adapter_model_path` set + `mode="train"` | Tokenizer from checkpoint → load base (internal GRPO patching) → resize → `PeftModel.from_pretrained` | GRPO/RC-GRPO resume |
+| `adapter_model_path` set + `mode="inference"` | Tokenizer from checkpoint → load base → resize → `PeftModel.from_pretrained` → `for_inference()` | Evaluation from checkpoint |
+| `adapter_model_path=None` + `mode="train"` | Tokenizer from base → load base → `patch_tokenizer_for_custom_roles` → `add_new_tokens` → `get_peft_model` (fresh LoRA) | SFT/RCTP-FT from scratch |
 | `adapter_model_path=None` + `mode="inference"` | Tokenizer from base model → load base → `for_inference()` | Base model benchmarking |
 
 ### Dual GPU memory pools
@@ -86,7 +86,7 @@ The notebook manages **two separate vLLM memory reservations**:
 With `UNSLOTH_VLLM_STANDBY=1` + `vllm_enable_sleep_mode=True`, Unsloth engine offloads to CPU on startup and TRL's engine offloads during optimizer steps. Changing either value without understanding the split can OOM.
 
 ### `load_in_4bit` + `fast_inference` interaction
-`fast_inference=True` (needed for GRPO vLLM) is compatible with `load_in_4bit=True`, but `max_lora_rank` can only be passed alongside `load_in_4bit` when `fast_inference=False`. The unified `load_model()` handles this: `max_lora_rank` is only added to kwargs when `adapter_model_path is None and not fast_inference and mode == "train"`.
+`fast_inference=True` (needed for GRPO vLLM) is compatible with `load_in_4bit=True`, but `max_lora_rank` can only be passed alongside `load_in_4bit` when `fast_inference=False`. The unified `load_model()` handles this: `max_lora_rank` is added to kwargs when `mode == "train"` (any training mode, including checkpoint resume with `fast_inference=True` where Unsloth silently ignores it).
 
 ### Reward token injection location
 Injected into the **system message**, not the user message (departs from the paper's Appendix B diagram). Both `_format_trajectory()` (RCTP-FT) and `inject_reward_token_into_prompt()` (RC-GRPO) target the system content before `<|im_end|>`.
