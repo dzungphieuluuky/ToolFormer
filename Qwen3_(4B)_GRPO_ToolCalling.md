@@ -180,7 +180,7 @@ else:
 
 # Kaggle: install pre-downloaded torch + flash-attn + einops (Blackwell wheels)
 if ENV_NAME == "kaggle":
-    !pip install --no-index --find-links=/kaggle/input/datasets/dzung271828/telco-wheels/rtx6000-flash-attn-wheels/rtx6000-flash-attn-wheels torch flash-attn einops
+    !pip install --no-index --find-links=/kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/ \"/kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/flash_attn-2.8.3+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl\"
 
 ```
 
@@ -2370,7 +2370,7 @@ def load_model(
 
     # ── 0. Kaggle path override ───────────────────────────────────────
     if env_name == "kaggle" and base_model_name == "unsloth/Qwen3-4B-Instruct-2507":
-        base_model_name = "/kaggle/input/models/dzung271828/unsloth/transformers/default/3/qwen3-4b-instruct-2507"
+        base_model_name = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
 
     # ── 1. Load tokenizer from checkpoint or base model ───────────────
     if adapter_model_path is not None:
@@ -2401,7 +2401,11 @@ def load_model(
         # Base model only (no adapter) — for benchmarking the base model
         pass
     else:
-        # Fresh training: create LoRA from scratch
+        # Fresh training: register tokens FIRST, then create LoRA from scratch
+        # (Unsloth best practice: add_new_tokens must come before get_peft_model)
+        patch_tokenizer_for_custom_roles(tokenizer)
+        from unsloth import add_new_tokens
+        add_new_tokens(model, tokenizer, REWARD_TOKENS)
         target_modules = lora_target_modules or [
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
@@ -2416,9 +2420,6 @@ def load_model(
             use_gradient_checkpointing="unsloth",
             random_state=3407,
         )
-        # Register custom chat template + reward tokens for fresh training
-        patch_tokenizer_for_custom_roles(tokenizer)
-        model.resize_token_embeddings(len(tokenizer))
         print(
             f"[base_trainer] Tokenizer vocab size: {len(tokenizer)} "
             f"(includes reward tokens: {REWARD_TOKENS})"
