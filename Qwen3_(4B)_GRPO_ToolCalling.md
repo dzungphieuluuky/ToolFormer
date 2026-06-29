@@ -2441,11 +2441,24 @@ def load_model(
 
     # ── 4. Load adapter, base model only, or create fresh LoRA ────────
     if adapter_model_path is not None:
-        # Checkpoint resume: wrap base model with adapter via PeftModel
-        # (Unsloth internal pattern: PeftModel.from_pretrained, not model.load_adapter)
-        from peft import PeftModel
+        # Checkpoint resume: create Unsloth-patched PeftModel first (so load_lora exists),
+        # then load trained adapter weights onto it
         model.resize_token_embeddings(len(tokenizer))
-        model = PeftModel.from_pretrained(model, adapter_model_path, is_trainable=(mode == "train"))
+        target_modules = lora_target_modules or [
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ]
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=lora_rank,
+            target_modules=target_modules,
+            lora_alpha=lora_rank * 2,
+            lora_dropout=lora_dropout,
+            bias="none",
+            use_gradient_checkpointing="unsloth",
+            random_state=3407,
+        )
+        model.load_adapter(adapter_model_path, adapter_name="default")
     elif mode == "inference":
         # Base model only (no adapter) — for benchmarking the base model
         pass
