@@ -184,6 +184,36 @@ if ENV_NAME == "kaggle":
 
 ```
 
+```python _cell_guid="version-check-001" jupyter={"outputs_hidden": false}
+#@title Check installed library versions
+import sys
+import importlib
+
+_LIBS = {
+    "torch": None,
+    "transformers": None,
+    "unsloth": None,
+    "unsloth_zoo": None,
+    "trl": None,
+    "peft": None,
+    "vllm": None,
+    "datasets": None,
+    "accelerate": None,
+    "bitsandbytes": None,
+    "flash_attn": None,
+}
+
+print(f"{'Library':<20} {'Version':<20}")
+print("-" * 40)
+for lib_name in _LIBS:
+    try:
+        mod = importlib.import_module(lib_name)
+        ver = getattr(mod, "__version__", "no __version__")
+        print(f"{lib_name:<20} {ver:<20}")
+    except ImportError:
+        print(f"{lib_name:<20} {'not installed':<20}")
+```
+
 ```python _cell_guid="a955182c-dba8-4e85-ac6c-af0cc52bec87" _uuid="bd6e4b23-caa2-4376-8b6b-3e92ad4d3776" jupyter={"outputs_hidden": false}
 import os
 import sys
@@ -2372,6 +2402,23 @@ def load_model(
     if env_name == "kaggle" and base_model_name == "unsloth/Qwen3-4B-Instruct-2507":
         base_model_name = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
 
+    # ── 0.5 Adapter guard ─────────────────────────────────────────────
+    if os.path.isdir(base_model_name) and os.path.exists(
+        os.path.join(base_model_name, "adapter_config.json")
+    ):
+        raise ValueError(
+            f"The path '{base_model_name}' appears to be a LoRA adapter "
+            "(contains adapter_config.json), not a base model. "
+            "Set `adapter_model_path=` to this path and `base_model_name=` "
+            "to the original base model (e.g. 'unsloth/Qwen3-4B-Instruct-2507')."
+        )
+
+    # ── 0.6 Log resolved paths ─────────────────────────────────────────
+    if adapter_model_path is not None:
+        print(f"[load_model] base_model_name={base_model_name}, adapter_model_path={adapter_model_path}")
+    else:
+        print(f"[load_model] base_model_name={base_model_name}")
+
     # ── 1. Load tokenizer from checkpoint or base model ───────────────
     if adapter_model_path is not None:
         tokenizer = AutoTokenizer.from_pretrained(adapter_model_path)
@@ -2652,6 +2699,7 @@ def evaluate_model(
     use_vllm: bool = True,
     batch_size: int = 32,
     gpu_memory_utilization: float | None = None,
+    base_model_name: str | None = None,
 ) -> dict:
     """
     Unified evaluation: batched vLLM when use_vllm=True (default, ~10x faster),
@@ -2668,7 +2716,12 @@ def evaluate_model(
     if gpu_memory_utilization is None:
         gpu_memory_utilization = TRAIN_CONFIG["model"]["gpu_memory_utilization"]
 
+    # Resolve base_model_name: explicit arg > TRAIN_CONFIG default
+    if base_model_name is None:
+        base_model_name = TRAIN_CONFIG["model"]["name"]
+
     model, tokenizer = load_model(
+        base_model_name=base_model_name,
         adapter_model_path=model_path,
         mode="inference",
         fast_inference=True,
