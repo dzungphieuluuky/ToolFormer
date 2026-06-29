@@ -94,7 +94,7 @@ print(f"IS_T4_GPU: {IS_T4_GPU}")
 
 ```python
 # ── Install packages ────────────────────────────────────────────────
-os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # Disable vLLM standby mode for training SFT
+    os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # Disable vLLM standby mode for training SFT (default, overridden per mode)
 
 if ENV_NAME == "colab":
     print("Installing packages for colab env...")
@@ -2351,45 +2351,28 @@ def build_messages_for_grpo(
 
 
 def load_model(
-    base_model_name: str = "unsloth/Qwen3-4B-Instruct-2507",
-    max_seq_length: int = 8192,
-    load_in_4bit: bool = True,
-    fast_inference: bool = False,
+    config: dict,
     adapter_model_path: str | None = None,
     mode: str = "train",
-    lora_rank: int = 16,
-    lora_target_modules: list[str] | None = None,
-    lora_dropout: float = 0.0,
     env_name: str = "local",
-    gpu_memory_utilization: float | None = None,
 ) -> tuple:
     """
     Unified model loader: load a base model with optional LoRA adapter.
 
-    Three modes:
+    All model/lora parameters are read from the `config` dict (TRAIN_CONFIG),
+    with mode-specific overrides merged from config["mode_overrides"].
+
+    Four modes:
       1. adapter_model_path=... + mode="train" → checkpoint resume for continued training
       2. adapter_model_path=... + mode="inference" → checkpoint for evaluation
       3. adapter_model_path=None + mode="inference" → base model only (benchmarking)
       4. adapter_model_path=None + mode="train" → fresh LoRA from scratch (SFT/RCTP-FT)
 
-    Loading order (critically preserves embedding/adapter compatibility):
-      1. Determine tokenizer source (checkpoint vs base model)
-      2. Load base model via FastLanguageModel.from_pretrained (fast_inference handles internal patching)
-      3. Resize embeddings if adapter_model_path is given (checkpoint resume)
-      4. Load existing adapter or create a fresh LoRA via get_peft_model
-      5. Enable inference mode if mode == "inference"
-
     Args:
-        base_model_name: Name or path of the original base model.
-        max_seq_length: Maximum sequence length.
-        load_in_4bit: Whether to quantize to 4-bit.
-        fast_inference: Enable vLLM fast inference (required for GRPO).
+        config: Centralized TRAIN_CONFIG dict.
         adapter_model_path: Path to a trained adapter checkpoint. If None,
             creates a fresh LoRA via get_peft_model (from-scratch training).
         mode: "train" (keep trainable) or "inference" (for_inference).
-        lora_rank: LoRA rank (used only when adapter_model_path is None).
-        lora_target_modules: LoRA target modules (fresh LoRA only).
-        lora_dropout: LoRA dropout (fresh LoRA only).
         env_name: Environment name for Kaggle path override.
 
     Returns:
@@ -2398,9 +2381,19 @@ def load_model(
     from transformers import AutoTokenizer
     from unsloth import FastLanguageModel
 
-    # ── 0. Kaggle path override ───────────────────────────────────────
-    if env_name == "kaggle" and base_model_name == "unsloth/Qwen3-4B-Instruct-2507":
-        base_model_name = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
+    # Merge base model config with mode-specific overrides
+    base_cfg = config["model"]
+    overrides = config.get("mode_overrides", {}).get(mode, {})
+    model_cfg = {**base_cfg, **overrides}
+
+    base_model_name = model_cfg["name"]
+    max_seq_length = model_cfg["max_seq_length"]
+    load_in_4bit = model_cfg["load_in_4bit"]
+    fast_inference = model_cfg["fast_inference"]
+    lora_rank = config["lora"]["r"]
+    lora_target_modules = config["lora"]["target_modules"]
+    lora_dropout = config["lora"]["lora_dropout"]
+    gpu_memory_utilization = model_cfg.get("gpu_memory_utilization")
 
     # ── 0.5 Adapter guard ─────────────────────────────────────────────
     if os.path.isdir(base_model_name) and os.path.exists(
@@ -2426,13 +2419,15 @@ def load_model(
         tokenizer = AutoTokenizer.from_pretrained(base_model_name)
 
     # ── 2. Load the base model (fast_inference handles internal GRPO patching) ─
+    if gpu_memory_utilization is None:
+        gpu_memory_utilization = 0.3 if not config.get("vllm", {}).get("standby", False) else 0.8
     kwargs = dict(
         model_name=base_model_name,
         max_seq_length=max_seq_length,
         load_in_4bit=load_in_4bit,
         fast_inference=fast_inference,
         dtype=None,
-        gpu_memory_utilization=gpu_memory_utilization if gpu_memory_utilization is not None else (0.3 if os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1" else 0.8),
+        gpu_memory_utilization=gpu_memory_utilization,
     )
     if mode == "train":
         kwargs["max_lora_rank"] = lora_rank
@@ -2511,11 +2506,12 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig
     train_cfg = config["training"]
     grpo_cfg = config["grpo"]
     data_cfg = config["data"]
+    vllm_cfg = config["vllm"]
 
     vllm_params = SamplingParams(
         temperature=grpo_cfg["temperature"],
-        top_p=0.95,
-        min_p=0.05,
+        top_p=vllm_cfg["top_p"],
+        min_p=vllm_cfg["min_p"],
         seed=train_cfg["seed"],
         stop=["</tool_call>"],
         include_stop_str_in_output=True,
@@ -2549,9 +2545,9 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig
         # full max_seq_length (8192), saving VRAM for training activations.
         vllm_max_model_length=data_cfg["max_prompt_length"] + data_cfg["max_completion_length"],
         # Tight vLLM memory fraction — training model needs more now with batch=2, seq=4096.
-        vllm_gpu_memory_utilization=0.6,
+        vllm_gpu_memory_utilization=vllm_cfg["gpu_memory_utilization"],
         # Offload vLLM KV cache to CPU during optimizer steps (frees VRAM).
-        vllm_enable_sleep_mode=True,
+        vllm_enable_sleep_mode=vllm_cfg["enable_sleep_mode"],
         max_steps=train_cfg["max_steps"],
         save_steps=train_cfg["save_steps"],
         logging_steps=train_cfg["logging_steps"],
@@ -2727,20 +2723,10 @@ def evaluate_model(
     tag = "vLLM-Bench" if use_vllm else "Benchmark"
     logger.info(f"[{tag}] Loading model from {model_path}")
 
-    # Resolve gpu_memory_utilization: explicit arg > config default > 0.8 fallback
-    if gpu_memory_utilization is None:
-        gpu_memory_utilization = TRAIN_CONFIG["model"]["gpu_memory_utilization"]
-
-    # Resolve base_model_name: explicit arg > TRAIN_CONFIG default
-    if base_model_name is None:
-        base_model_name = TRAIN_CONFIG["model"]["name"]
-
     model, tokenizer = load_model(
-        base_model_name=base_model_name,
+        TRAIN_CONFIG,
         adapter_model_path=model_path,
         mode="inference",
-        fast_inference=True,
-        gpu_memory_utilization=gpu_memory_utilization,
         env_name=ENV_NAME,
     )
 
@@ -3010,6 +2996,35 @@ TRAIN_CONFIG = {
         "loss_type": "grpo",
         "mask_truncated_completions": True,
     },
+    "vllm": {
+        "gpu_memory_utilization": 0.6,
+        "enable_sleep_mode": True,
+        "top_p": 0.95,
+        "min_p": 0.05,
+        "expandable_segments": False,
+        "standby": True,
+    },
+    "mode_overrides": {
+        "grpo": {"fast_inference": True, "load_in_4bit": False},
+        "rc_grpo": {"fast_inference": True, "load_in_4bit": False},
+        "inference": {"fast_inference": True},
+    },
+    "env_overrides": {
+        "default": {
+            "UNSLOTH_VLLM_STANDBY": "0",
+        },
+        "grpo": {
+            "UNSLOTH_VLLM_STANDBY": "1",
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
+        },
+        "rc_grpo": {
+            "UNSLOTH_VLLM_STANDBY": "1",
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
+        },
+        "eval": {
+            "UNSLOTH_VLLM_STANDBY": "0",
+        },
+    },
     "sft": {
         "output_dir": "outputs/sft_model",
         "learning_rate": 2e-5,
@@ -3031,6 +3046,18 @@ TRAIN_CONFIG = {
 # Load function library and argument values (if available)
 function_library = load_function_library(FUNCTION_LIBRARY_PATH)
 print(f"Loaded {len(function_library)} functions")
+
+
+def apply_env_overrides(config: dict, mode: str = "sft"):
+    """Set environment variables from config's env_overrides for the given mode.
+
+    Starts with mode="default" entries, then applies entries specific to *mode*.
+    """
+    env_overrides = config.get("env_overrides", {})
+    merged = dict(env_overrides.get("default", {}))
+    merged.update(env_overrides.get(mode, {}))
+    for key, value in merged.items():
+        os.environ[key] = value
 
 # Load argument values catalog as ValueCatalog objects (needed by retrievers)
 argument_values_catalog = None
@@ -3068,15 +3095,9 @@ if MODE == "sft":
     print("SFT: Supervised Fine-Tuning on expert demonstrations")
     print("=" * 70)
     model, tokenizer = load_model(
-        base_model_name=TRAIN_CONFIG["model"]["name"],
-        max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
-        load_in_4bit=TRAIN_CONFIG["model"]["load_in_4bit"],
-        fast_inference=False,
+        TRAIN_CONFIG,
         adapter_model_path=None,
         mode="train",
-        lora_rank=TRAIN_CONFIG["lora"]["r"],
-        lora_target_modules=TRAIN_CONFIG["lora"]["target_modules"],
-        lora_dropout=TRAIN_CONFIG["lora"]["lora_dropout"],
         env_name=ENV_NAME,
     )
     print("Model and tokenizer loaded.")
@@ -3162,15 +3183,9 @@ if MODE == "rctp_ft":
     print("STAGE 1: Reward-Conditioned Trajectory Policy (RCTP) Fine-tuning")
     print("=" * 70)
     model, tokenizer = load_model(
-        base_model_name=TRAIN_CONFIG["model"]["name"],
-        max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
-        load_in_4bit=TRAIN_CONFIG["model"]["load_in_4bit"],
-        fast_inference=False,
+        TRAIN_CONFIG,
         adapter_model_path=None,
         mode="train",
-        lora_rank=TRAIN_CONFIG["lora"]["r"],
-        lora_target_modules=TRAIN_CONFIG["lora"]["target_modules"],
-        lora_dropout=TRAIN_CONFIG["lora"]["lora_dropout"],
         env_name=ENV_NAME,
     )
     print("Model and tokenizer loaded.")
@@ -3304,8 +3319,7 @@ FileLink("outputs/rctp_ft_model.zip")
 ```python
 if MODE in ("grpo", "rc_grpo"):
     # ===================== STAGE 2: RC-GRPO (or vanilla GRPO baseline) =====================
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"  # required by vLLM standby mode
-    os.environ["UNSLOTH_VLLM_STANDBY"] = "1"  # vLLM standby mode — shares GPU with trainer
+    apply_env_overrides(TRAIN_CONFIG, MODE)  # sets UNSLOTH_VLLM_STANDBY=1, expandable_segments:False
     print("\n" + "=" * 70)
     print(f"STAGE 2: {'RC-GRPO' if MODE == 'rc_grpo' else 'Vanilla GRPO baseline'}")
     print("=" * 70)
@@ -3320,12 +3334,9 @@ if MODE in ("grpo", "rc_grpo"):
     print(f"[Stage 2] Loading adapter_model_path = {adapter_model_path}")
 
     model, tokenizer = load_model(
-        base_model_name=base_model_path,
+        TRAIN_CONFIG,
         adapter_model_path=adapter_model_path,
-        mode="train",          # keep in train mode for further fine-tuning
-        fast_inference=True,
-        max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
-        load_in_4bit=False,
+        mode="train",
         env_name=ENV_NAME,
     )
     print("Model and tokenizer loaded.")
@@ -3422,7 +3433,7 @@ if ENV_NAME == "colab":
 
 ```python
 # ===================== EVALUATION =====================
-os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval: ensures no dual vLLM engines; gpu_memory_utilization is passed explicitly from TRAIN_CONFIG
+apply_env_overrides(TRAIN_CONFIG, "eval")  # ensure no vLLM standby after training
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
     retriever = FunctionRetriever(function_library, method="hybrid")
