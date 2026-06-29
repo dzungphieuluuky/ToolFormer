@@ -1178,7 +1178,7 @@ class FunctionRetriever:
     but significant latency.
 
     If you need embeddings, pass method="hybrid" and an encoder_model
-    that handles Vietnamese (e.g., "keepitreal/vietnamese-sbert").
+    that handles Vietnamese (e.g., "codefuse-ai/F2LLM-v2-0.6B").
     """
 
     def __init__(
@@ -3488,22 +3488,19 @@ if ENV_NAME == "colab":
 apply_env_overrides(TRAIN_CONFIG, "eval")  # ensure no vLLM standby after training
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
-    # ── Build seen-functions set from training data ────────────────────
+    # ── Build seen-functions set from train schema ─────────────────────
     seen_functions: set[str] = set()
-    train_path = TRAIN_CONFIG["data"]["train_path"]
-    if Path(train_path).exists():
-        with jsonlines.open(train_path) as reader:
-            for entry in reader:
-                for call in entry.get("ground_truth", {}).get("calls", []):
-                    fn = call.get("function")
-                    if fn:
-                        seen_functions.add(fn)
-        print(f"[Eval] Loaded {len(seen_functions)} seen functions from training set")
+    schema_path = DATA_DIR / "function_schema_train.json"
+    if schema_path.exists():
+        with open(schema_path) as f:
+            seen_functions = set(json.load(f).keys())
+        print(f"[Eval] Loaded {len(seen_functions)} seen functions from train schema")
     else:
-        print(f"[Eval] Train set not found at {train_path}; seen-functions split disabled")
+        print(f"[Eval] Train schema not found at {schema_path}; seen-functions split disabled")
         seen_functions = None
 
-    retriever = FunctionRetriever(function_library, method="hybrid")
+    retriever = FunctionRetriever(function_library, method="hybrid",
+                                   encoder_model="codefuse-ai/F2LLM-v2-0.6B")
     sandbox = Sandbox(function_library)
 
     eval_result = evaluate_model(
