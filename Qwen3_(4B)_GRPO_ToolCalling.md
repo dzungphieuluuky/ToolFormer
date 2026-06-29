@@ -2690,6 +2690,28 @@ def aggregate_metrics(results: list[dict[str, float]]) -> dict[str, float]:
             agg[k] = float("nan")
     return agg
 
+
+def classify_eval_sample(sample: dict, seen_functions: set[str]) -> str:
+    """Classify a test sample into one of three eval categories.
+
+    - "abstention": no function calls expected (model should refuse).
+    - "seen": all expected function(s) appear in the training set.
+    - "unseen": at least one expected function was never seen during training.
+    """
+    if seen_functions is None:
+        raise TypeError("seen_functions must be a set, got None")
+
+    calls = sample.get("ground_truth", {}).get("calls", [])
+    if not calls:
+        return "abstention"
+
+    for call in calls:
+        func = call.get("function")
+        if func is not None and func not in seen_functions:
+            return "unseen"
+    return "seen"
+
+
 def estimate_cost(prompt: str, response: str, price_per_1k_tokens: float = 0.0002) -> float:
     total_chars = len(prompt) + len(response)
     tokens_est = total_chars / 1.3
@@ -2711,6 +2733,7 @@ def evaluate_model(
     batch_size: int = 32,
     gpu_memory_utilization: float | None = None,
     base_model_name: str | None = None,
+    seen_functions: set[str] | None = None,
 ) -> dict:
     """
     Unified evaluation: batched vLLM when use_vllm=True (default, ~10x faster),
@@ -2791,9 +2814,9 @@ def evaluate_model(
             cost = estimate_cost(prompts[idx], response)
             metrics = compute_all_metrics(response, gt, sandbox, latency, cost, function_library)
             metrics["sample_id"] = sample.get("id", "")
+            if seen_functions is not None:
+                metrics["category"] = classify_eval_sample(sample, seen_functions)
             results.append(metrics)
-
-    else:
         # ── Serial generation with HF generate ─────────────────────────
         results = []
         for sample in tqdm(test_samples, desc=f"Eval [{model_name_tag}]"):
@@ -2823,11 +2846,25 @@ def evaluate_model(
             cost = estimate_cost(prompt, response)
             metrics = compute_all_metrics(response, gt, sandbox, latency, cost, function_library)
             metrics["sample_id"] = sample.get("id", "")
+            if seen_functions is not None:
+                metrics["category"] = classify_eval_sample(sample, seen_functions)
             results.append(metrics)
 
     agg = aggregate_metrics(results)
     logger.info(f"[{tag}] {model_name_tag} aggregate: {agg}")
-    return {"model": model_name_tag, "per_sample": results, "aggregate": agg}
+
+    # ── Per-category aggregates ────────────────────────────────────────
+    per_category = {}
+    if seen_functions is not None:
+        from collections import defaultdict
+        cat_results: dict[str, list[dict]] = defaultdict(list)
+        for r in results:
+            cat = r.get("category", "unknown")
+            cat_results[cat].append(r)
+        for cat, cat_list in cat_results.items():
+            per_category[cat] = aggregate_metrics(cat_list)
+
+    return {"model": model_name_tag, "per_sample": results, "aggregate": agg, "per_category": per_category}
 
 ```
 
@@ -2868,6 +2905,21 @@ def generate_report(eval_results: list[dict], output_dir: str = "outputs/evaluat
     with open(json_path, "w") as fh:
         json.dump(eval_results, fh, indent=2, default=str)
     print(f"[Report] JSON saved → {json_path}")
+
+    # ── Per-category CSVs ──────────────────────────────────────────────
+    for result in eval_results:
+        per_category = result.get("per_category", {})
+        if not per_category:
+            continue
+        for cat, cat_agg in per_category.items():
+            cat_rows = []
+            for k, display in METRIC_DISPLAY_NAMES.items():
+                cat_rows.append({display: round(cat_agg.get(k, float("nan")), 4)})
+            if cat_rows:
+                cat_df = pd.DataFrame(cat_rows, index=list(METRIC_DISPLAY_NAMES.keys()))
+                cat_csv_path = out / f"metrics_{cat}.csv"
+                cat_df.to_csv(cat_csv_path)
+                print(f"[Report] CSV ({cat}) saved → {cat_csv_path}")
     # Optional plots
     try:
         _plot_bar_comparison(df, out)
@@ -3436,6 +3488,21 @@ if ENV_NAME == "colab":
 apply_env_overrides(TRAIN_CONFIG, "eval")  # ensure no vLLM standby after training
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
+    # ── Build seen-functions set from training data ────────────────────
+    seen_functions: set[str] = set()
+    train_path = TRAIN_CONFIG["data"]["train_path"]
+    if Path(train_path).exists():
+        with jsonlines.open(train_path) as reader:
+            for entry in reader:
+                for call in entry.get("ground_truth", {}).get("calls", []):
+                    fn = call.get("function")
+                    if fn:
+                        seen_functions.add(fn)
+        print(f"[Eval] Loaded {len(seen_functions)} seen functions from training set")
+    else:
+        print(f"[Eval] Train set not found at {train_path}; seen-functions split disabled")
+        seen_functions = None
+
     retriever = FunctionRetriever(function_library, method="hybrid")
     sandbox = Sandbox(function_library)
 
@@ -3453,6 +3520,7 @@ if Path(test_dataset_path).exists():
         use_vllm=EVAL_USE_VLLM,
         batch_size=TRAIN_CONFIG["data"]["eval_batch_size"],
         gpu_memory_utilization=TRAIN_CONFIG["model"]["gpu_memory_utilization"],
+        seen_functions=seen_functions,  # type: ignore[arg-type]
     )
     from tabulate import tabulate
     agg = eval_result["aggregate"]
@@ -3478,6 +3546,28 @@ if Path(test_dataset_path).exists():
             rows.append([display_name, f"{mean_val:.4f}"])
     print(f"\nEvaluation Benchmark \u2014 {MODE}")
     print(tabulate(rows, headers=["Metric", "Value"], tablefmt="grid"))
+
+    # ── Per-category breakdown ─────────────────────────────────────────
+    per_category = eval_result.get("per_category", {})
+    if per_category:
+        print(f"\n{'=' * 80}")
+        print(f"  PER-CATEGORY BREAKDOWN")
+        print(f"{'=' * 80}")
+        for cat in ("seen", "unseen", "abstention"):
+            cat_agg = per_category.get(cat)
+            if cat_agg is None:
+                continue
+            cat_rows = []
+            for display_name, key in metric_names:
+                mean_val = cat_agg.get(key, float("nan"))
+                std_val = cat_agg.get(f"{key}__std", float("nan"))
+                if isinstance(std_val, (int, float)) and not math.isnan(std_val):
+                    cat_rows.append([display_name, f"{mean_val:.4f} \u00b1 {std_val:.4f}"])
+                else:
+                    cat_rows.append([display_name, f"{mean_val:.4f}"])
+            print(f"\n  \u2500\u2500 {cat.upper()} ({cat_agg.get('function_selection_accuracy__count', 0):,} samples) \u2500\u2500")
+            print(tabulate(cat_rows, headers=["Metric", "Value"], tablefmt="grid"))
+
     generate_report([eval_result])
     !zip -r {MODE_OUTPUT_DIR}.zip {MODE_OUTPUT_DIR}
     from IPython.display import FileLink
