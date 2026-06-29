@@ -159,7 +159,7 @@ class FunctionRetriever:
     but significant latency.
 
     If you need embeddings, pass method="hybrid" and an encoder_model
-    that handles Vietnamese (e.g., "keepitreal/vietnamese-sbert").
+    that handles Vietnamese (e.g., "codefuse-ai/F2LLM-v2-0.6B").
     """
 
     def __init__(

@@ -324,7 +324,7 @@ def main() -> None:
         function_library=full_library,
         method=ret_cfg.get("method", "hybrid"),
         encoder_model=ret_cfg.get(
-            "encoder_model", "sentence-transformers/all-MiniLM-L6-v2"
+            "encoder_model", "codefuse-ai/F2LLM-v2-0.6B"
         ),
         index_dir=index_dir,
     )

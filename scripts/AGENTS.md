@@ -1,8 +1,8 @@
 # scripts/ — Data Pipeline
 
-**Generated:** 2026-06-27
+**Generated:** 2026-06-29
 **Branch:** main
-**Commit:** edb1444e
+**Commit:** a253f9a
 
 Standalone CLI data pipeline tools for the ToolFormer project (generation, enrichment, validation, retrieval). All scripts run independently — the notebook at root does **not** import or depend on any of them at runtime (it loads only pre-built datasets from `data/generated/`).
 
