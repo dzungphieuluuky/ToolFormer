@@ -3082,18 +3082,18 @@ TRAIN_CONFIG = {
     "sft": {
         "output_dir": "outputs/sft_model",
         "learning_rate": 2e-5,
-        "batch_size": 2,
-        "gradient_accumulation_steps": 4,
-        "num_epochs": 3,
+        "batch_size": 4,
+        "gradient_accumulation_steps": 8,
+        "num_epochs": 2,
         "max_seq_length": 8192,
     },
     # RCTP-FT (Stage 1) hyperparameters — Table 11
     "rctp_ft": {
         "output_dir": "outputs/rctp_ft_model",
         "learning_rate": 2e-5,
-        "batch_size": 2,
+        "batch_size": 4,
         "gradient_accumulation_steps": 8,
-        "num_epochs": 3,
+        "num_epochs": 2,
         "failures_per_expert": 1,  # -> exact 1:1 success:failure ratio (Table 6)
     },
 }
