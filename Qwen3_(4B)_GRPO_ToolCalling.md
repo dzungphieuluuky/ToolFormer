@@ -190,10 +190,10 @@ import sys
 import importlib
 
 _LIBS = {
-    "torch": None,
-    "transformers": None,
     "unsloth": None,
     "unsloth_zoo": None,
+    "torch": None,
+    "transformers": None,
     "trl": None,
     "peft": None,
     "vllm": None,
@@ -2417,6 +2417,8 @@ def load_model(
         tokenizer = AutoTokenizer.from_pretrained(adapter_model_path)
     else:
         tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+    # Restore the custom chat template (may not persist through save/load)
+    tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
 
     # ── 2. Load the base model (fast_inference handles internal GRPO patching) ─
     if gpu_memory_utilization is None:
@@ -2435,10 +2437,54 @@ def load_model(
     model, _ = FastLanguageModel.from_pretrained(**kwargs)
 
     # ── 4. Load adapter, base model only, or create fresh LoRA ────────
-    if adapter_model_path is not None:
-        # Checkpoint resume: create Unsloth-patched PeftModel first (so load_lora exists),
-        # then load trained adapter weights onto it
-        model.resize_token_embeddings(len(tokenizer))
+    if adapter_model_path is not None and mode == "inference":
+        # ── Adapter inference: try Unsloth auto-detect first ──────────
+        # When adapter_config.json's base_model_name_or_path is reachable
+        # (e.g. on Kaggle), this works in one call.  If it fails (local
+        # dev with Kaggle-only paths), fall back to manual load.
+        try:
+            model, tokenizer = FastLanguageModel.from_pretrained(
+                model_name=adapter_model_path,
+                max_seq_length=max_seq_length,
+                load_in_4bit=load_in_4bit,
+                fast_inference=fast_inference,
+                dtype=None,
+                gpu_memory_utilization=gpu_memory_utilization,
+            )
+            # Auto-detect loads tokenizer from adapter dir; restore
+            # the custom chat template that may not have been persisted.
+            tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
+            print(f"[load_model] Auto-detected adapter from {adapter_model_path}")
+        except Exception:
+            print(f"[load_model] Auto-detect failed — falling back to manual adapter load")
+            tokenizer = AutoTokenizer.from_pretrained(adapter_model_path)
+            model, _ = FastLanguageModel.from_pretrained(**kwargs)
+            patch_tokenizer_for_custom_roles(tokenizer)
+            from unsloth import add_new_tokens
+            add_new_tokens(model, tokenizer, REWARD_TOKENS)
+            target_modules = lora_target_modules or [
+                "q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj",
+            ]
+            model = FastLanguageModel.get_peft_model(
+                model,
+                r=lora_rank,
+                target_modules=target_modules,
+                lora_alpha=lora_rank * 2,
+                lora_dropout=lora_dropout,
+                bias="none",
+                use_gradient_checkpointing="unsloth",
+                random_state=3407,
+            )
+            model.load_adapter(adapter_model_path, adapter_name="default")
+    elif adapter_model_path is not None:
+        # ── Adapter + train: checkpoint resume for continued training ──
+        # Register tokens FIRST (Unsloth best practice: add_new_tokens
+        # must come before get_peft_model), then create PeftModel,
+        # then load the trained adapter weights.
+        patch_tokenizer_for_custom_roles(tokenizer)
+        from unsloth import add_new_tokens
+        add_new_tokens(model, tokenizer, REWARD_TOKENS)
         target_modules = lora_target_modules or [
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
@@ -2454,6 +2500,10 @@ def load_model(
             random_state=3407,
         )
         model.load_adapter(adapter_model_path, adapter_name="default")
+        print(
+            f"[load_model] Loaded adapter from {adapter_model_path}, "
+            f"vocab size: {len(tokenizer)} (includes reward tokens: {REWARD_TOKENS})"
+        )
     elif mode == "inference":
         # Base model only (no adapter) — for benchmarking the base model
         pass
