@@ -2,7 +2,8 @@
 *opencode*
 *openagent*
 *tui.json
-data/
+data/generated/v1.0
+data/generated/v2.0
 unsloth*
 *.zip
 models/
