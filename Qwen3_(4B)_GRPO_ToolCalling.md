@@ -3021,8 +3021,8 @@ TRAIN_CONFIG = {
         "lr_scheduler_type": "cosine",
         "optim": "adamw_8bit",
         "per_device_train_batch_size": 2,
-        "gradient_accumulation_steps": 4,
-        "num_generations": 5,         # Table 10: Group Size G = 5
+        "gradient_accumulation_steps": 8,
+        "num_generations": 4,         # Table 10: Group Size G = 4
         "max_steps": 500,             # reduce for quick test; increase for full run
         "save_steps": 50,
         "logging_steps": 1,
