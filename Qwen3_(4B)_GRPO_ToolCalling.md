@@ -2360,16 +2360,20 @@ def build_messages_for_grpo(
 
 
 def load_model(
-    config: dict,
+    base_model_name: str = "unsloth/Qwen3-4B-Instruct-2507",
+    max_seq_length: int = 8192,
+    load_in_4bit: bool = True,
+    fast_inference: bool = False,
     adapter_model_path: str | None = None,
     mode: str = "train",
+    lora_rank: int = 16,
+    lora_target_modules: list[str] | None = None,
+    lora_dropout: float = 0.0,
     env_name: str = "local",
+    gpu_memory_utilization: float | None = None,
 ) -> tuple:
     """
     Unified model loader: load a base model with optional LoRA adapter.
-
-    All model/lora parameters are read from the `config` dict (TRAIN_CONFIG),
-    with mode-specific overrides merged from config["mode_overrides"].
 
     Four modes:
       1. adapter_model_path=... + mode="train" → checkpoint resume for continued training
@@ -2378,11 +2382,18 @@ def load_model(
       4. adapter_model_path=None + mode="train" → fresh LoRA from scratch (SFT/RCTP-FT)
 
     Args:
-        config: Centralized TRAIN_CONFIG dict.
+        base_model_name: Name or path of the original base model.
+        max_seq_length: Maximum sequence length.
+        load_in_4bit: Whether to quantize to 4-bit.
+        fast_inference: Enable vLLM fast inference (required for GRPO).
         adapter_model_path: Path to a trained adapter checkpoint. If None,
             creates a fresh LoRA via get_peft_model (from-scratch training).
         mode: "train" (keep trainable) or "inference" (for_inference).
+        lora_rank: LoRA rank.
+        lora_target_modules: LoRA target modules.
+        lora_dropout: LoRA dropout.
         env_name: Environment name for Kaggle path override.
+        gpu_memory_utilization: GPU memory utilization for vLLM.
 
     Returns:
         Tuple of (model, tokenizer).
@@ -2390,19 +2401,9 @@ def load_model(
     from transformers import AutoTokenizer
     from unsloth import FastLanguageModel
 
-    # Merge base model config with mode-specific overrides
-    base_cfg = config["model"]
-    overrides = config.get("mode_overrides", {}).get(mode, {})
-    model_cfg = {**base_cfg, **overrides}
-
-    base_model_name = model_cfg["name"]
-    max_seq_length = model_cfg["max_seq_length"]
-    load_in_4bit = model_cfg["load_in_4bit"]
-    fast_inference = model_cfg["fast_inference"]
-    lora_rank = config["lora"]["r"]
-    lora_target_modules = config["lora"]["target_modules"]
-    lora_dropout = config["lora"]["lora_dropout"]
-    gpu_memory_utilization = model_cfg.get("gpu_memory_utilization")
+    # ── 0. Kaggle path override ───────────────────────────────────────
+    if env_name == "kaggle" and base_model_name == "unsloth/Qwen3-4B-Instruct-2507":
+        base_model_name = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
 
     # ── 0.5 Adapter guard ─────────────────────────────────────────────
     if os.path.isdir(base_model_name) and os.path.exists(
@@ -2431,7 +2432,7 @@ def load_model(
 
     # ── 2. Load the base model (fast_inference handles internal GRPO patching) ─
     if gpu_memory_utilization is None:
-        gpu_memory_utilization = 0.3 if not config.get("vllm", {}).get("standby", False) else 0.8
+        gpu_memory_utilization = 0.3 if os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1" else 0.8
     kwargs = dict(
         model_name=base_model_name,
         max_seq_length=max_seq_length,
@@ -2468,9 +2469,16 @@ def load_model(
             print(f"[load_model] Auto-detect failed — falling back to manual adapter load")
             tokenizer = AutoTokenizer.from_pretrained(adapter_model_path)
             model, _ = FastLanguageModel.from_pretrained(**kwargs)
-            patch_tokenizer_for_custom_roles(tokenizer)
+            # Set chat template FIRST, then resize via Unsloth, then register as special
+            tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
             from unsloth import add_new_tokens
             add_new_tokens(model, tokenizer, REWARD_TOKENS)
+            existing_special = tokenizer.additional_special_tokens or []
+            tokens_to_add = [t for t in REWARD_TOKENS if t not in existing_special]
+            if tokens_to_add:
+                tokenizer.add_special_tokens(
+                    {"additional_special_tokens": existing_special + tokens_to_add}
+                )
             target_modules = lora_target_modules or [
                 "q_proj", "k_proj", "v_proj", "o_proj",
                 "gate_proj", "up_proj", "down_proj",
@@ -2488,12 +2496,18 @@ def load_model(
             model.load_adapter(adapter_model_path, adapter_name="default")
     elif adapter_model_path is not None:
         # ── Adapter + train: checkpoint resume for continued training ──
-        # Register tokens FIRST (Unsloth best practice: add_new_tokens
-        # must come before get_peft_model), then create PeftModel,
+        # Set chat template FIRST, then resize via Unsloth (must see tokens
+        # as NEW — no overlap), register as special, THEN create PeftModel,
         # then load the trained adapter weights.
-        patch_tokenizer_for_custom_roles(tokenizer)
+        tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
         from unsloth import add_new_tokens
         add_new_tokens(model, tokenizer, REWARD_TOKENS)
+        existing_special = tokenizer.additional_special_tokens or []
+        tokens_to_add = [t for t in REWARD_TOKENS if t not in existing_special]
+        if tokens_to_add:
+            tokenizer.add_special_tokens(
+                {"additional_special_tokens": existing_special + tokens_to_add}
+            )
         target_modules = lora_target_modules or [
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
@@ -2517,11 +2531,18 @@ def load_model(
         # Base model only (no adapter) — for benchmarking the base model
         pass
     else:
-        # Fresh training: register tokens FIRST, then create LoRA from scratch
-        # (Unsloth best practice: add_new_tokens must come before get_peft_model)
-        patch_tokenizer_for_custom_roles(tokenizer)
+        # Fresh training: set chat template FIRST, resize via Unsloth
+        # (tokens must be NEW — no overlap), register as special,
+        # THEN create LoRA from scratch (add_new_tokens before get_peft_model)
+        tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
         from unsloth import add_new_tokens
         add_new_tokens(model, tokenizer, REWARD_TOKENS)
+        existing_special = tokenizer.additional_special_tokens or []
+        tokens_to_add = [t for t in REWARD_TOKENS if t not in existing_special]
+        if tokens_to_add:
+            tokenizer.add_special_tokens(
+                {"additional_special_tokens": existing_special + tokens_to_add}
+            )
         target_modules = lora_target_modules or [
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
@@ -2806,9 +2827,10 @@ def evaluate_model(
     logger.info(f"[{tag}] Loading model from {model_path}")
 
     model, tokenizer = load_model(
-        TRAIN_CONFIG,
+        base_model_name=BASE_MODEL_NAME,
         adapter_model_path=model_path,
         mode="inference",
+        fast_inference=True,
         env_name=ENV_NAME,
     )
 
@@ -3208,7 +3230,7 @@ if MODE == "sft":
     print("SFT: Supervised Fine-Tuning on expert demonstrations")
     print("=" * 70)
     model, tokenizer = load_model(
-        TRAIN_CONFIG,
+        base_model_name=BASE_MODEL_NAME,
         adapter_model_path=None,
         mode="train",
         env_name=ENV_NAME,
@@ -3297,7 +3319,7 @@ if MODE == "rctp_ft":
     print("STAGE 1: Reward-Conditioned Trajectory Policy (RCTP) Fine-tuning")
     print("=" * 70)
     model, tokenizer = load_model(
-        TRAIN_CONFIG,
+        base_model_name=BASE_MODEL_NAME,
         adapter_model_path=None,
         mode="train",
         env_name=ENV_NAME,
@@ -3449,9 +3471,11 @@ if MODE in ("grpo", "rc_grpo"):
     print(f"[Stage 2] Loading adapter_model_path = {adapter_model_path}")
 
     model, tokenizer = load_model(
-        TRAIN_CONFIG,
+        base_model_name=BASE_MODEL_NAME,
         adapter_model_path=adapter_model_path,
         mode="train",
+        fast_inference=True,
+        load_in_4bit=False,
         env_name=ENV_NAME,
     )
     print("Model and tokenizer loaded.")
