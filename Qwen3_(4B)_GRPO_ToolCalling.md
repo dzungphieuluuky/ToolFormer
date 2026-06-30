@@ -93,6 +93,15 @@ print(f"IS_T4_GPU: {IS_T4_GPU}")
 ```
 
 ```python
+# ── Base model path (auto-detects Kaggle path) ────────────────────────
+if ENV_NAME == "kaggle":
+    BASE_MODEL_NAME = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
+else:
+    BASE_MODEL_NAME = "unsloth/Qwen3-4B-Instruct-2507"
+print(f"Base model: {BASE_MODEL_NAME}")
+```
+
+```python
 # ── Install packages ────────────────────────────────────────────────
 os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # Disable vLLM standby mode for training SFT (default, overridden per mode)
 
@@ -3046,7 +3055,7 @@ ARGUMENT_VALUES_PATH = DATA_DIR / "argument_values.json"  # optional
 
 TRAIN_CONFIG = {
     "model": {
-        "name": "unsloth/Qwen3-4B-Instruct-2507",
+        "name": BASE_MODEL_NAME,
         "max_seq_length": 8192,
         "load_in_4bit": True,
         "fast_inference": False,
@@ -3433,7 +3442,7 @@ if MODE in ("grpo", "rc_grpo"):
     # ── Set model paths for Stage 2 ──────────────────────────────────
     # The adapter checkpoint is typically the Stage 1 (RCTP-FT) output.
     # Adjust these to point to your trained checkpoint directories.
-    base_model_path = "unsloth/Qwen3-4B-Instruct-2507"
+    base_model_path = BASE_MODEL_NAME
     adapter_model_path = TRAIN_CONFIG["rctp_ft"]["output_dir"]  # Stage 1 output
 
     print(f"[Stage 2] Loading base_model_path = {base_model_path}")
