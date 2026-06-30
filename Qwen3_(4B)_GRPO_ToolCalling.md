@@ -103,7 +103,7 @@ print(f"Base model: {BASE_MODEL_NAME}")
 
 ```python
 # ── Install packages ────────────────────────────────────────────────
-os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # vLLM standby OFF globally (all modes, including GRPO)
+os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # Disable vLLM standby mode for training SFT
 
 if ENV_NAME == "colab":
     print("Installing packages for colab env...")
@@ -190,7 +190,6 @@ else:
 # Kaggle: install pre-downloaded torch + flash-attn + einops (Blackwell wheels)
 if ENV_NAME == "kaggle":
     !pip install --no-index --find-links=/kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/ /kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/flash_attn-2.8.3+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
-
 ```
 
 ```python _cell_guid="version-check-001" jupyter={"outputs_hidden": false}
@@ -291,7 +290,6 @@ if not is_kaggle:
     os.environ["WANDB_API_KEY"] = wandb_key = load_secret("WANDB_API_KEY")
     os.environ["HF_TOKEN"] = HF_TOKEN = load_secret("HF_TOKEN")
     GITHUB_TOKEN = load_secret("GITHUB_TOKEN")
-
 ```
 
 ```python _cell_guid="b925d264-a345-4bd6-a61a-25aca5734269" _uuid="d1c0fb9b-2d4b-48cf-8f1c-cbe9e7a7ea30" jupyter={"outputs_hidden": false}
@@ -649,8 +647,6 @@ class Sandbox:
             "status": status,
             "result": result,
         })
-
-
 ```
 
 ```python
@@ -1187,7 +1183,7 @@ class FunctionRetriever:
     but significant latency.
 
     If you need embeddings, pass method="hybrid" and an encoder_model
-    that handles Vietnamese (e.g., "AITeamVN/Vietnamese_Embedding_v2").
+    that handles Vietnamese (e.g., "keepitreal/vietnamese-sbert").
     """
 
     def __init__(
@@ -1563,7 +1559,6 @@ def _safe_list(value: str) -> list:
 def load_function_library(library_path: str) -> dict:
     with open(library_path, "r", encoding="utf-8") as fh:
         return json.load(fh)
-
 ```
 
 ```python
@@ -1697,22 +1692,6 @@ def args_accuracy(response: str | dict, expected_args: dict) -> float:
     return correct / len(expected_args)
 
 
-def reasoning_quality(response: str) -> float:
-    text = extract_reasoning(response)
-    if not text:
-        return 0.0
-    words = len(text.split())
-    length_score = min(1.0, words / 50.0)
-    has_steps = bool(
-        re.search(
-            r"(step\s*\d|first|then|finally|because|therefore|since)",
-            text,
-            re.IGNORECASE,
-        )
-    )
-    return 0.7 * length_score + 0.3 * float(has_steps)
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Trajectory-level reward for RC-GRPO
 # Uses the SAME {function, arguments} schema as dataset & extract_call
@@ -1739,7 +1718,6 @@ def make_reward_function(
         "format": 0.10,
         "function": 0.30,
         "arguments": 0.40,
-        "reasoning": 0.10,
         "execution": 0.10,
     }
 
@@ -1754,11 +1732,8 @@ def make_reward_function(
 
         # 1. Format reward
         has_tool_call = bool(_TOOL_CALL_RE.search(response_text))
-        has_reasoning = bool(_REASONING_RE.search(response_text))
         fmt = 0.0
         if has_tool_call:
-            fmt += 0.5
-        if has_tool_call and has_reasoning:
             fmt += 0.5
         score += w["format"] * fmt
 
@@ -1791,8 +1766,6 @@ def make_reward_function(
             arg_scores.append(best)
         score += w["arguments"] * (sum(arg_scores) / len(arg_scores))
 
-        # 5. Reasoning quality
-        score += w["reasoning"] * reasoning_quality(response_text)
 
         # 6. Execution (sandbox)
         if sandbox_cls is not None:
@@ -1812,9 +1785,19 @@ def make_reward_function(
 def make_binary_reward_function(ground_truth: dict, function_library: dict):
     """
     Build a binary reward callable(response_text) -> int (0 or 1).
-    Returns 1 only if ALL gold calls are matched exactly.
-    Returns 1 for correct abstention (no gold calls, no agent calls).
-    Compatible with RC-GRPO's R(τ).
+
+    Wraps the continuous ``compute_action_coverage_reward`` and thresholds
+    at >= 1.0 for backward compatibility with code that expects a binary
+    signal.  1.0 means every gold call and every parameter was matched
+    exactly — the same semantics as the old all-or-nothing check.
+
+    Args:
+        ground_truth: Ground-truth dict with a ``"calls"`` key.
+        function_library: Dict mapping function names to schemas (unused but
+                          kept for API compatibility).
+
+    Returns:
+        A callable ``(response_text: str) -> int`` that returns 0 or 1.
     """
     gt = normalize_ground_truth(ground_truth)
     gold_calls = [
@@ -1829,7 +1812,8 @@ def make_binary_reward_function(ground_truth: dict, function_library: dict):
             return 1 if is_abstention else 0
         if is_abstention:
             return 0
-        return compute_action_coverage_reward(agent_calls, gold_calls)
+        # Threshold the continuous score at 1.0 (perfect match).
+        return 1 if compute_action_coverage_reward(agent_calls, gold_calls) >= 1.0 else 0
 
     return _reward
 
@@ -1839,43 +1823,137 @@ def make_binary_reward_function(ground_truth: dict, function_library: dict):
 # ─────────────────────────────────────────────────────────────────────
 
 def function_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
-    """TRL-compatible: measures function selection accuracy against ground truth."""
+    """F1-based function selection reward, continuous in [0, 1].
+
+    Computes the F1 score between the set of gold function names and the set of
+    agent-called function names.  This penalises both missing calls (low recall)
+    AND spurious extra calls (low precision), unlike the previous binary check
+    which only enforced recall.
+
+    Args:
+        completions: List of model response strings.
+        ground_truth: List of ground-truth dicts (or JSON strings), each with a
+                      ``"calls"`` key containing ``{"function": ..., "arguments": ...}``.
+        **kwargs: Additional keyword arguments (ignored; for TRL compatibility).
+
+    Returns:
+        List of float scores in [0.0, 1.0].  A correct abstention (no gold calls
+        and no agent calls) yields 1.0.
+    """
     rewards = []
     for c, gt_raw in zip(completions, ground_truth):
         gt = _parse_gt(gt_raw)
-        calls = gt.get("calls", [])
-        expected_func = calls[0].get("function", "") if calls else ""
-        rewards.append(func_selection_ok(c, expected_func))
+        gold_calls = gt.get("calls", [])
+        gold_funcs = [gc["function"] for gc in gold_calls if isinstance(gc, dict)]
+        agent_calls = extract_all_calls(c)
+        agent_funcs = [ac.get("function") for ac in agent_calls if isinstance(ac, dict)]
+
+        # Abstention: no gold calls expected and none produced.
+        if not gold_funcs:
+            rewards.append(1.0 if not agent_funcs else 0.0)
+            continue
+
+        if not agent_funcs:
+            rewards.append(0.0)
+            continue
+
+        # Precision = fraction of agent calls that are gold calls.
+        true_positives = sum(1 for af in agent_funcs if af in gold_funcs)
+        precision = true_positives / len(agent_funcs)
+
+        # Recall = fraction of gold calls found among agent calls.
+        recall = sum(1 for gf in gold_funcs if gf in agent_funcs) / len(gold_funcs)
+
+        # F1 = harmonic mean of precision and recall.
+        if precision + recall == 0.0:
+            rewards.append(0.0)
+        else:
+            rewards.append(2.0 * precision * recall / (precision + recall))
     return rewards
 
 
 def format_reward(completions: list[str], **kwargs) -> list[float]:
+    """Multi-component format reward, continuous in [0, 1].
+
+    Composed of three equally-weighted sub-checks to close trivial-hack
+    vectors (e.g. inserting a bare ``<tool_call>`` token with no real call):
+
+      1. Tag presence (0.3):  whether ``<tool_call>`` and ``</tool_call>`` tags appear.
+      2. JSON parseability (0.3): whether extracted tool calls are valid JSON.
+      3. Clean output (0.4): whether the response contains no text outside
+         ``<tool_call>`` / ``<reasoning>`` blocks (i.e. no "garbage" tokens).
+
+    Args:
+        completions: List of model response strings.
+        **kwargs: Additional keyword arguments (ignored; for TRL compatibility).
+
+    Returns:
+        List of float scores in [0.0, 1.0].
+    """
     rewards = []
     for c in completions:
-        has_tool_call = bool(_TOOL_CALL_RE.search(c))
-        has_reasoning = bool(_REASONING_RE.search(c))
-        score = 0.0
-        if has_tool_call:
-            score += 0.5
-        if has_tool_call and has_reasoning:
-            score += 0.5
+        # 1. Tag presence (0.3)
+        has_open = bool(_TOOL_CALL_RE.search(c))
+        has_close = "</tool_call>" in c
+        tag_score = 1.0 if (has_open and has_close) else 0.0
+
+        # 2. JSON parseability (0.3) — every extracted call must parse.
+        calls = extract_all_calls(c) if has_open else []
+        json_score = 1.0 if calls else 0.0
+        if calls:
+            # All must be valid dicts with "function" key.
+            json_score = 1.0 if all(
+                isinstance(ac, dict) and "function" in ac for ac in calls
+            ) else 0.0
+
+        # 3. Clean output (0.4) — no text outside <tool_call> / <reasoning>.
+        #    Strip both block types; any non-whitespace remaining is "garbage".
+        cleaned = _TOOL_CALL_RE.sub("", c)
+        cleaned = _REASONING_RE.sub("", cleaned)
+        cleaned = cleaned.strip()
+        clean_score = 1.0 if not cleaned else 0.0
+
+        # Weighted composite
+        score = 0.3 * tag_score + 0.3 * json_score + 0.4 * clean_score
         rewards.append(score)
     return rewards
 
 def argument_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
-    """FIXED: parses JSON-string ground_truth via _parse_gt before use."""
-    """TRL-compatible: measures argument accuracy against ground truth."""
+    """Continuous argument-accuracy reward in [0, 1].
+
+    Delegates to ``compute_action_coverage_reward`` which returns a float
+    based on per-parameter matching accuracy.  Removes the previous
+    ``float()`` cast since that function now returns float natively.
+
+    Args:
+        completions: List of model response strings.
+        ground_truth: List of ground-truth dicts (or JSON strings).
+        **kwargs: Additional keyword arguments (ignored; for TRL compatibility).
+
+    Returns:
+        List of float scores in [0.0, 1.0].
+    """
     rewards = []
     for c, gt_raw in zip(completions, ground_truth):
         gt = _parse_gt(gt_raw)
-        calls = gt.get("calls", [])
-        expected_args = calls[0].get("arguments", {}) if calls else {}
-        rewards.append(args_accuracy(c, expected_args))
+        gold_calls = [
+            {"function": c["function"], "arguments": c.get("arguments", {})}
+            for c in gt.get("calls", [])
+        ]
+        if not gold_calls:
+            agent_calls = extract_all_calls(c)
+            rewards.append(1.0 if not agent_calls else 0.0)
+            continue
+        agent_calls = extract_all_calls(c)
+        if not agent_calls:
+            rewards.append(0.0)
+            continue
+        rewards.append(compute_action_coverage_reward(agent_calls, gold_calls))
     return rewards
 
 
 def composite_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
-    """TRL-compatible: weighted sum of format + function + arguments + reasoning."""
+    """TRL-compatible: weighted sum of format + function + arguments (no reasoning term per Eq. 5)."""
     rewards = []
     for c, gt_raw in zip(completions, ground_truth):
         gt = _parse_gt(gt_raw)
@@ -1888,11 +1966,9 @@ def composite_reward(completions: list[str], ground_truth: list, **kwargs) -> li
             expected_func = first_call.get("function", "")
             expected_args = first_call.get("arguments", {})
             r = (
-                0.10 * (1.0 if bool(_TOOL_CALL_RE.search(c)) and bool(_REASONING_RE.search(c)) else
-                        0.5 if bool(_TOOL_CALL_RE.search(c)) else 0.0)
+                0.10 * (1.0 if bool(_TOOL_CALL_RE.search(c)) else 0.0)
                 + 0.30 * func_selection_ok(c, expected_func)
                 + 0.40 * args_accuracy(c, expected_args)
-                + 0.20 * reasoning_quality(c)
             )
             rewards.append(r)
     return rewards
@@ -1944,28 +2020,60 @@ REWARD_TOKENS = [HIGH_REWARD_TOKEN, LOW_REWARD_TOKEN]
 def compute_action_coverage_reward(
     agent_tool_calls: List[Dict],
     gold_tool_calls: List[Dict],
-) -> int:
-    """
-    R_action: 1 iff every gold call is covered by some agent call.
-    Uses {function, arguments} keys consistently.
+) -> float:
+    """Continuous action-coverage reward in [0, 1] based on per-parameter accuracy.
+
+    For each gold call, finds the matching agent call by function name and scores
+    the fraction of gold parameters that the agent correctly predicts (with type
+    coercion).  Returns the mean across all gold calls.
+
+    Args:
+        agent_tool_calls: List of agent-produced call dicts, each with
+                          ``"function"`` and ``"arguments"`` keys.
+        gold_tool_calls: List of ground-truth call dicts.
+
+    Returns:
+        Float in [0.0, 1.0].  1.0 when every gold call is fully covered (all
+        parameters match exactly).  0.0 when no gold call is matched at all.
     """
 
-    def _tool_call_matches(agent_call: dict, gold_call: dict) -> bool:
-        if agent_call.get("function") != gold_call.get("function"):
-            return False
-        gold_args = gold_call.get("arguments", {})
-        agent_args = agent_call.get("arguments", {})
+    def _param_match_score(agent_args: dict, gold_args: dict) -> float:
+        """Fraction of gold parameters matched (with type coercion and strip)."""
+        if not gold_args:
+            return 1.0
+        matched = 0
         for param_key, param_val in gold_args.items():
-            if str(agent_args.get(param_key, "")).strip() != str(param_val).strip():
-                return False
-        return True
+            agent_val = agent_args.get(param_key)
+            if agent_val is None:
+                continue
+            if str(agent_val).strip() == str(param_val).strip():
+                matched += 1
+        return matched / len(gold_args)
 
+    if not gold_tool_calls:
+        return 1.0
+    if not agent_tool_calls:
+        return 0.0
+
+    call_scores = []
     for gold_call in gold_tool_calls:
-        if not any(_tool_call_matches(a, gold_call) for a in agent_tool_calls):
-            return 0
-    return 1
+        gold_func = gold_call.get("function")
+        gold_args = gold_call.get("arguments", {})
 
+        # Find matching agent call by function name.
+        matching_agent = None
+        for ac in agent_tool_calls:
+            if ac.get("function") == gold_func:
+                matching_agent = ac
+                break
 
+        if matching_agent is None:
+            call_scores.append(0.0)
+        else:
+            agent_args = matching_agent.get("arguments", {})
+            call_scores.append(_param_match_score(agent_args, gold_args))
+
+    return sum(call_scores) / len(call_scores)
 ```
 
 ```python
@@ -2375,11 +2483,18 @@ def load_model(
     """
     Unified model loader: load a base model with optional LoRA adapter.
 
-    Four modes:
+    Three modes:
       1. adapter_model_path=... + mode="train" → checkpoint resume for continued training
       2. adapter_model_path=... + mode="inference" → checkpoint for evaluation
       3. adapter_model_path=None + mode="inference" → base model only (benchmarking)
       4. adapter_model_path=None + mode="train" → fresh LoRA from scratch (SFT/RCTP-FT)
+
+    Loading order (critically preserves embedding/adapter compatibility):
+      1. Determine tokenizer source (checkpoint vs base model)
+      2. Load base model via FastLanguageModel.from_pretrained (fast_inference handles internal patching)
+      3. Resize embeddings if adapter_model_path is given (checkpoint resume)
+      4. Load existing adapter or create a fresh LoRA via get_peft_model
+      5. Enable inference mode if mode == "inference"
 
     Args:
         base_model_name: Name or path of the original base model.
@@ -2389,11 +2504,10 @@ def load_model(
         adapter_model_path: Path to a trained adapter checkpoint. If None,
             creates a fresh LoRA via get_peft_model (from-scratch training).
         mode: "train" (keep trainable) or "inference" (for_inference).
-        lora_rank: LoRA rank.
-        lora_target_modules: LoRA target modules.
-        lora_dropout: LoRA dropout.
+        lora_rank: LoRA rank (used only when adapter_model_path is None).
+        lora_target_modules: LoRA target modules (fresh LoRA only).
+        lora_dropout: LoRA dropout (fresh LoRA only).
         env_name: Environment name for Kaggle path override.
-        gpu_memory_utilization: GPU memory utilization for vLLM.
 
     Returns:
         Tuple of (model, tokenizer).
@@ -2427,19 +2541,15 @@ def load_model(
         tokenizer = AutoTokenizer.from_pretrained(adapter_model_path)
     else:
         tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-    # Restore the custom chat template (may not persist through save/load)
-    tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
 
     # ── 2. Load the base model (fast_inference handles internal GRPO patching) ─
-    if gpu_memory_utilization is None:
-        gpu_memory_utilization = 0.3 if os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1" else 0.8
     kwargs = dict(
         model_name=base_model_name,
         max_seq_length=max_seq_length,
         load_in_4bit=load_in_4bit,
         fast_inference=fast_inference,
         dtype=None,
-        gpu_memory_utilization=gpu_memory_utilization,
+        gpu_memory_utilization=gpu_memory_utilization if gpu_memory_utilization is not None else (0.3 if os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1" else 0.8),
     )
     if mode == "train":
         kwargs["max_lora_rank"] = lora_rank
@@ -2447,67 +2557,10 @@ def load_model(
     model, _ = FastLanguageModel.from_pretrained(**kwargs)
 
     # ── 4. Load adapter, base model only, or create fresh LoRA ────────
-    if adapter_model_path is not None and mode == "inference":
-        # ── Adapter inference: try Unsloth auto-detect first ──────────
-        # When adapter_config.json's base_model_name_or_path is reachable
-        # (e.g. on Kaggle), this works in one call.  If it fails (local
-        # dev with Kaggle-only paths), fall back to manual load.
-        try:
-            model, tokenizer = FastLanguageModel.from_pretrained(
-                model_name=adapter_model_path,
-                max_seq_length=max_seq_length,
-                load_in_4bit=load_in_4bit,
-                fast_inference=fast_inference,
-                dtype=None,
-                gpu_memory_utilization=gpu_memory_utilization,
-            )
-            # Auto-detect loads tokenizer from adapter dir; restore
-            # the custom chat template that may not have been persisted.
-            tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
-            print(f"[load_model] Auto-detected adapter from {adapter_model_path}")
-        except Exception:
-            print(f"[load_model] Auto-detect failed — falling back to manual adapter load")
-            tokenizer = AutoTokenizer.from_pretrained(adapter_model_path)
-            model, _ = FastLanguageModel.from_pretrained(**kwargs)
-            # Set chat template FIRST, then resize via Unsloth, then register as special
-            tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
-            from unsloth import add_new_tokens
-            add_new_tokens(model, tokenizer, REWARD_TOKENS)
-            existing_special = tokenizer.additional_special_tokens or []
-            tokens_to_add = [t for t in REWARD_TOKENS if t not in existing_special]
-            if tokens_to_add:
-                tokenizer.add_special_tokens(
-                    {"additional_special_tokens": existing_special + tokens_to_add}
-                )
-            target_modules = lora_target_modules or [
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
-            ]
-            model = FastLanguageModel.get_peft_model(
-                model,
-                r=lora_rank,
-                target_modules=target_modules,
-                lora_alpha=lora_rank * 2,
-                lora_dropout=lora_dropout,
-                bias="none",
-                use_gradient_checkpointing="unsloth",
-                random_state=3407,
-            )
-            model.load_adapter(adapter_model_path, adapter_name="default")
-    elif adapter_model_path is not None:
-        # ── Adapter + train: checkpoint resume for continued training ──
-        # Set chat template FIRST, then resize via Unsloth (must see tokens
-        # as NEW — no overlap), register as special, THEN create PeftModel,
-        # then load the trained adapter weights.
-        tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
-        from unsloth import add_new_tokens
-        add_new_tokens(model, tokenizer, REWARD_TOKENS)
-        existing_special = tokenizer.additional_special_tokens or []
-        tokens_to_add = [t for t in REWARD_TOKENS if t not in existing_special]
-        if tokens_to_add:
-            tokenizer.add_special_tokens(
-                {"additional_special_tokens": existing_special + tokens_to_add}
-            )
+    if adapter_model_path is not None:
+        # Checkpoint resume: create Unsloth-patched PeftModel first (so load_lora exists),
+        # then load trained adapter weights onto it
+        model.resize_token_embeddings(len(tokenizer))
         target_modules = lora_target_modules or [
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
@@ -2523,26 +2576,15 @@ def load_model(
             random_state=3407,
         )
         model.load_adapter(adapter_model_path, adapter_name="default")
-        print(
-            f"[load_model] Loaded adapter from {adapter_model_path}, "
-            f"vocab size: {len(tokenizer)} (includes reward tokens: {REWARD_TOKENS})"
-        )
     elif mode == "inference":
         # Base model only (no adapter) — for benchmarking the base model
         pass
     else:
-        # Fresh training: set chat template FIRST, resize via Unsloth
-        # (tokens must be NEW — no overlap), register as special,
-        # THEN create LoRA from scratch (add_new_tokens before get_peft_model)
-        tokenizer.chat_template = CUSTOM_CHAT_TEMPLATE
+        # Fresh training: register tokens FIRST, then create LoRA from scratch
+        # (Unsloth best practice: add_new_tokens must come before get_peft_model)
+        patch_tokenizer_for_custom_roles(tokenizer)
         from unsloth import add_new_tokens
         add_new_tokens(model, tokenizer, REWARD_TOKENS)
-        existing_special = tokenizer.additional_special_tokens or []
-        tokens_to_add = [t for t in REWARD_TOKENS if t not in existing_special]
-        if tokens_to_add:
-            tokenizer.add_special_tokens(
-                {"additional_special_tokens": existing_special + tokens_to_add}
-            )
         target_modules = lora_target_modules or [
             "q_proj", "k_proj", "v_proj", "o_proj",
             "gate_proj", "up_proj", "down_proj",
@@ -2586,12 +2628,11 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig
     train_cfg = config["training"]
     grpo_cfg = config["grpo"]
     data_cfg = config["data"]
-    vllm_cfg = config["vllm"]
 
     vllm_params = SamplingParams(
         temperature=grpo_cfg["temperature"],
-        top_p=vllm_cfg["top_p"],
-        min_p=vllm_cfg["min_p"],
+        top_p=0.95,
+        min_p=0.05,
         seed=train_cfg["seed"],
         stop=["</tool_call>"],
         include_stop_str_in_output=True,
@@ -2623,11 +2664,7 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig
         # ── vLLM KV cache reduction ────────────────────────────────────
         # Cap KV cache to exactly prompt+completion length rather than
         # full max_seq_length (8192), saving VRAM for training activations.
-        vllm_max_model_length=data_cfg["max_prompt_length"] + data_cfg["max_completion_length"],
-        # Tight vLLM memory fraction — training model needs more now with batch=2, seq=4096.
-        vllm_gpu_memory_utilization=vllm_cfg["gpu_memory_utilization"],
-        # Offload vLLM KV cache to CPU during optimizer steps (frees VRAM).
-        vllm_enable_sleep_mode=vllm_cfg["enable_sleep_mode"],
+        save_total_limit=1,
         max_steps=train_cfg["max_steps"],
         save_steps=train_cfg["save_steps"],
         logging_steps=train_cfg["logging_steps"],
@@ -2642,7 +2679,51 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig
 # Dataset loaders
 # ─────────────────────────────────────────────────────────────────────
 
-def build_trl_reward_functions(algorithm: str = "rc_grpo"):
+def execution_reward(
+    completions: list[str],
+    ground_truth: list,
+    function_library: dict,
+    **kwargs,
+) -> list[float]:
+    """Execution-based R_state reward using the Sandbox, continuous in [0, 1].
+
+    For each completion, creates a fresh ``Sandbox(function_library)``, runs all
+    extracted tool calls through it, and returns the fraction of calls that
+    succeeded (validated schema + mock execution).  This closes the "syntax but
+    non-executable call" hack vector — the agent must produce calls that not only
+    *look* correct but also pass schema validation and refer to real functions.
+
+    Args:
+        completions: List of model response strings.
+        ground_truth: List of ground-truth dicts (or JSON strings; used only for
+                      shape alignment, not for scoring).
+        function_library: Dict mapping function names to schemas, passed to each
+                          fresh ``Sandbox`` instance.
+        **kwargs: Additional keyword arguments (ignored; for TRL compatibility).
+
+    Returns:
+        List of float scores in [0.0, 1.0].  1.0 if every extracted tool call
+        executed successfully.  0.0 if none succeeded.
+    """
+    rewards = []
+    for c, _ in zip(completions, ground_truth):
+        calls = extract_all_calls(c)
+        if not calls:
+            rewards.append(0.0)
+            continue
+        sandbox = Sandbox(function_library)
+        results = sandbox.execute_all(c)
+        if not results:
+            rewards.append(0.0)
+        else:
+            rewards.append(sum(1 for r in results if r) / len(results))
+    return rewards
+
+
+def build_trl_reward_functions(
+    algorithm: str = "rc_grpo",
+    function_library: dict | None = None,
+):
     """
     Returns the list of reward functions compatible with TRL's GRPOTrainer
     for the selected algorithm.
@@ -2655,8 +2736,27 @@ def build_trl_reward_functions(algorithm: str = "rc_grpo"):
         # The difference is only in prompt conditioning (reward tokens injected
         # by RCGRPOTrainer._generate_and_score_completions) — R(tau) checks
         # state/action correctness identically (see Eq. 5 / Sec 3.1).
+        #
+        # execution_reward is only added when function_library is provided
+        # (it requires a Sandbox and a real function schema source).
+        if function_library is not None:
+            from functools import partial
+            return [
+                function_reward,
+                argument_reward,
+                format_reward,
+                partial(execution_reward, function_library=function_library),
+            ]
         return [function_reward, argument_reward, format_reward]
     # default / vanilla GRPO
+    if function_library is not None:
+        from functools import partial
+        return [
+            function_reward,
+            argument_reward,
+            format_reward,
+            partial(execution_reward, function_library=function_library),
+        ]
     return [function_reward, argument_reward, format_reward]
 
 # ─────────────────────────────────────────────────────────────────────
@@ -2684,8 +2784,6 @@ def inject_reward_token_into_prompt(
         return prompt[:sys_close] + inject_str + prompt[sys_close:]
     # fallback: append to end
     return prompt + f"\n[Reward Goal: {reward_token}]\n"
-
-
 ```
 
 ```python
@@ -2770,28 +2868,6 @@ def aggregate_metrics(results: list[dict[str, float]]) -> dict[str, float]:
             agg[k] = float("nan")
     return agg
 
-
-def classify_eval_sample(sample: dict, seen_functions: set[str]) -> str:
-    """Classify a test sample into one of three eval categories.
-
-    - "abstention": no function calls expected (model should refuse).
-    - "seen": all expected function(s) appear in the training set.
-    - "unseen": at least one expected function was never seen during training.
-    """
-    if seen_functions is None:
-        raise TypeError("seen_functions must be a set, got None")
-
-    calls = sample.get("ground_truth", {}).get("calls", [])
-    if not calls:
-        return "abstention"
-
-    for call in calls:
-        func = call.get("function")
-        if func is not None and func not in seen_functions:
-            return "unseen"
-    return "seen"
-
-
 def estimate_cost(prompt: str, response: str, price_per_1k_tokens: float = 0.0002) -> float:
     total_chars = len(prompt) + len(response)
     tokens_est = total_chars / 1.3
@@ -2813,7 +2889,6 @@ def evaluate_model(
     batch_size: int = 32,
     gpu_memory_utilization: float | None = None,
     base_model_name: str | None = None,
-    seen_functions: set[str] | None = None,
 ) -> dict:
     """
     Unified evaluation: batched vLLM when use_vllm=True (default, ~10x faster),
@@ -2826,11 +2901,20 @@ def evaluate_model(
     tag = "vLLM-Bench" if use_vllm else "Benchmark"
     logger.info(f"[{tag}] Loading model from {model_path}")
 
+    # Resolve gpu_memory_utilization: explicit arg > config default > 0.8 fallback
+    if gpu_memory_utilization is None:
+        gpu_memory_utilization = TRAIN_CONFIG["model"]["gpu_memory_utilization"]
+
+    # Resolve base_model_name: explicit arg > TRAIN_CONFIG default
+    if base_model_name is None:
+        base_model_name = TRAIN_CONFIG["model"]["name"]
+
     model, tokenizer = load_model(
-        base_model_name=BASE_MODEL_NAME,
+        base_model_name=base_model_name,
         adapter_model_path=model_path,
         mode="inference",
         fast_inference=True,
+        gpu_memory_utilization=gpu_memory_utilization,
         env_name=ENV_NAME,
     )
 
@@ -2895,9 +2979,9 @@ def evaluate_model(
             cost = estimate_cost(prompts[idx], response)
             metrics = compute_all_metrics(response, gt, sandbox, latency, cost, function_library)
             metrics["sample_id"] = sample.get("id", "")
-            if seen_functions is not None:
-                metrics["category"] = classify_eval_sample(sample, seen_functions)
             results.append(metrics)
+
+    else:
         # ── Serial generation with HF generate ─────────────────────────
         results = []
         for sample in tqdm(test_samples, desc=f"Eval [{model_name_tag}]"):
@@ -2927,26 +3011,11 @@ def evaluate_model(
             cost = estimate_cost(prompt, response)
             metrics = compute_all_metrics(response, gt, sandbox, latency, cost, function_library)
             metrics["sample_id"] = sample.get("id", "")
-            if seen_functions is not None:
-                metrics["category"] = classify_eval_sample(sample, seen_functions)
             results.append(metrics)
 
     agg = aggregate_metrics(results)
     logger.info(f"[{tag}] {model_name_tag} aggregate: {agg}")
-
-    # ── Per-category aggregates ────────────────────────────────────────
-    per_category = {}
-    if seen_functions is not None:
-        from collections import defaultdict
-        cat_results: dict[str, list[dict]] = defaultdict(list)
-        for r in results:
-            cat = r.get("category", "unknown")
-            cat_results[cat].append(r)
-        for cat, cat_list in cat_results.items():
-            per_category[cat] = aggregate_metrics(cat_list)
-
-    return {"model": model_name_tag, "per_sample": results, "aggregate": agg, "per_category": per_category}
-
+    return {"model": model_name_tag, "per_sample": results, "aggregate": agg}
 ```
 
 ```python
@@ -2986,21 +3055,6 @@ def generate_report(eval_results: list[dict], output_dir: str = "outputs/evaluat
     with open(json_path, "w") as fh:
         json.dump(eval_results, fh, indent=2, default=str)
     print(f"[Report] JSON saved → {json_path}")
-
-    # ── Per-category CSVs ──────────────────────────────────────────────
-    for result in eval_results:
-        per_category = result.get("per_category", {})
-        if not per_category:
-            continue
-        for cat, cat_agg in per_category.items():
-            cat_rows = []
-            for k, display in METRIC_DISPLAY_NAMES.items():
-                cat_rows.append({display: round(cat_agg.get(k, float("nan")), 4)})
-            if cat_rows:
-                cat_df = pd.DataFrame(cat_rows, index=list(METRIC_DISPLAY_NAMES.keys()))
-                cat_csv_path = out / f"metrics_{cat}.csv"
-                cat_df.to_csv(cat_csv_path)
-                print(f"[Report] CSV ({cat}) saved → {cat_csv_path}")
     # Optional plots
     try:
         _plot_bar_comparison(df, out)
@@ -3061,7 +3115,7 @@ if ENV_NAME == "colab":
 
 ```python
 # ===================== CONFIGURATION =====================
-MODE = "sft"  # one of: "sft", "grpo", "rc_grpo", "rctp_ft"
+MODE = "grpo"  # one of: "sft", "grpo", "rc_grpo", "rctp_ft"
 assert MODE in ("sft", "grpo", "rc_grpo", "rctp_ft"), \
     f"Unknown MODE: {MODE}. Choose from: sft, grpo, rc_grpo, rctp_ft"
 EVAL_USE_VLLM = True  # Use vLLM batch eval for ~10x speedup
@@ -3077,7 +3131,7 @@ ARGUMENT_VALUES_PATH = DATA_DIR / "argument_values.json"  # optional
 
 TRAIN_CONFIG = {
     "model": {
-        "name": BASE_MODEL_NAME,
+        "name": "unsloth/Qwen3-4B-Instruct-2507",
         "max_seq_length": 8192,
         "load_in_4bit": True,
         "fast_inference": False,
@@ -3101,9 +3155,9 @@ TRAIN_CONFIG = {
         "warmup_ratio": 0.1,
         "lr_scheduler_type": "cosine",
         "optim": "adamw_8bit",
-        "per_device_train_batch_size": 2,
-        "gradient_accumulation_steps": 8,
-        "num_generations": 4,         # Table 10: Group Size G = 4
+        "per_device_train_batch_size": 4,
+        "gradient_accumulation_steps": 4,
+        "num_generations": 8,         # Table 10: Group Size G = 5
         "max_steps": 500,             # reduce for quick test; increase for full run
         "save_steps": 50,
         "logging_steps": 1,
@@ -3115,10 +3169,8 @@ TRAIN_CONFIG = {
         "train_path": str(DATA_DIR / "train_dataset_cleaned.jsonl"),
         "test_path": str(DATA_DIR / "test_dataset_cleaned.jsonl"),
         "sft_path": str(DATA_DIR / "sft_dataset.jsonl"),
-        "grpo_path": str(DATA_DIR / "grpo_dataset.jsonl"),
+        "grpo_path": str(DATA_DIR / "grpo_dataset_stage2.jsonl"),
         "rctp_path": str(DATA_DIR / "rctp_dataset.jsonl"),
-        "grpo_stage2_path": str(DATA_DIR / "grpo_dataset_stage2.jsonl"),
-        "rcgrpo_stage2_path": str(DATA_DIR / "grpo_dataset_stage2.jsonl"),
         "max_prompt_length": 7680,
         "max_completion_length": 512,
         "include_all_threshold": 5,
@@ -3131,40 +3183,11 @@ TRAIN_CONFIG = {
         "loss_type": "grpo",
         "mask_truncated_completions": True,
     },
-    "vllm": {
-        "gpu_memory_utilization": 0.6,
-        "enable_sleep_mode": True,
-        "top_p": 0.95,
-        "min_p": 0.05,
-        "expandable_segments": False,
-        "standby": True,
-    },
-    "mode_overrides": {
-        "grpo": {"fast_inference": True, "load_in_4bit": False},
-        "rc_grpo": {"fast_inference": True, "load_in_4bit": False},
-        "inference": {"fast_inference": True},
-    },
-    "env_overrides": {
-        "default": {
-            "UNSLOTH_VLLM_STANDBY": "0",
-        },
-        "grpo": {
-            "UNSLOTH_VLLM_STANDBY": "0",
-            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
-        },
-        "rc_grpo": {
-            "UNSLOTH_VLLM_STANDBY": "0",
-            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
-        },
-        "eval": {
-            "UNSLOTH_VLLM_STANDBY": "0",
-        },
-    },
     "sft": {
         "output_dir": "outputs/sft_model",
         "learning_rate": 2e-5,
-        "batch_size": 4,
-        "gradient_accumulation_steps": 8,
+        "batch_size": 8,
+        "gradient_accumulation_steps": 4,
         "num_epochs": 2,
         "max_seq_length": 8192,
     },
@@ -3172,8 +3195,8 @@ TRAIN_CONFIG = {
     "rctp_ft": {
         "output_dir": "outputs/rctp_ft_model",
         "learning_rate": 2e-5,
-        "batch_size": 4,
-        "gradient_accumulation_steps": 8,
+        "batch_size": 8,
+        "gradient_accumulation_steps": 4,
         "num_epochs": 2,
         "failures_per_expert": 1,  # -> exact 1:1 success:failure ratio (Table 6)
     },
@@ -3181,18 +3204,6 @@ TRAIN_CONFIG = {
 # Load function library and argument values (if available)
 function_library = load_function_library(FUNCTION_LIBRARY_PATH)
 print(f"Loaded {len(function_library)} functions")
-
-
-def apply_env_overrides(config: dict, mode: str = "sft"):
-    """Set environment variables from config's env_overrides for the given mode.
-
-    Starts with mode="default" entries, then applies entries specific to *mode*.
-    """
-    env_overrides = config.get("env_overrides", {})
-    merged = dict(env_overrides.get("default", {}))
-    merged.update(env_overrides.get(mode, {}))
-    for key, value in merged.items():
-        os.environ[key] = value
 
 # Load argument values catalog as ValueCatalog objects (needed by retrievers)
 argument_values_catalog = None
@@ -3205,7 +3216,6 @@ else:
 # ===================== Load model & register reward tokens =====================
 # Resolve output directory from active MODE
 MODE_OUTPUT_DIR = TRAIN_CONFIG["training"]["output_dir"]
-
 ```
 
 ```python
@@ -3230,9 +3240,15 @@ if MODE == "sft":
     print("SFT: Supervised Fine-Tuning on expert demonstrations")
     print("=" * 70)
     model, tokenizer = load_model(
-        base_model_name=BASE_MODEL_NAME,
+        base_model_name=TRAIN_CONFIG["model"]["name"],
+        max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
+        load_in_4bit=TRAIN_CONFIG["model"]["load_in_4bit"],
+        fast_inference=False,
         adapter_model_path=None,
         mode="train",
+        lora_rank=TRAIN_CONFIG["lora"]["r"],
+        lora_target_modules=TRAIN_CONFIG["lora"]["target_modules"],
+        lora_dropout=TRAIN_CONFIG["lora"]["lora_dropout"],
         env_name=ENV_NAME,
     )
     print("Model and tokenizer loaded.")
@@ -3319,9 +3335,15 @@ if MODE == "rctp_ft":
     print("STAGE 1: Reward-Conditioned Trajectory Policy (RCTP) Fine-tuning")
     print("=" * 70)
     model, tokenizer = load_model(
-        base_model_name=BASE_MODEL_NAME,
+        base_model_name=TRAIN_CONFIG["model"]["name"],
+        max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
+        load_in_4bit=TRAIN_CONFIG["model"]["load_in_4bit"],
+        fast_inference=False,
         adapter_model_path=None,
         mode="train",
+        lora_rank=TRAIN_CONFIG["lora"]["r"],
+        lora_target_modules=TRAIN_CONFIG["lora"]["target_modules"],
+        lora_dropout=TRAIN_CONFIG["lora"]["lora_dropout"],
         env_name=ENV_NAME,
     )
     print("Model and tokenizer loaded.")
@@ -3456,7 +3478,8 @@ if MODE == "rctp_ft":
 ```python
 if MODE in ("grpo", "rc_grpo"):
     # ===================== STAGE 2: RC-GRPO (or vanilla GRPO baseline) =====================
-    apply_env_overrides(TRAIN_CONFIG, MODE)  # sets UNSLOTH_VLLM_STANDBY=0, expandable_segments:False
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"  # required by vLLM standby mode 
+    os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # vLLM standby mode — shares GPU with trainer
     print("\n" + "=" * 70)
     print(f"STAGE 2: {'RC-GRPO' if MODE == 'rc_grpo' else 'Vanilla GRPO baseline'}")
     print("=" * 70)
@@ -3464,18 +3487,19 @@ if MODE in ("grpo", "rc_grpo"):
     # ── Set model paths for Stage 2 ──────────────────────────────────
     # The adapter checkpoint is typically the Stage 1 (RCTP-FT) output.
     # Adjust these to point to your trained checkpoint directories.
-    base_model_path = BASE_MODEL_NAME
-    adapter_model_path = TRAIN_CONFIG["rctp_ft"]["output_dir"]  # Stage 1 output
+    base_model_path = "unsloth/Qwen3-4B-Instruct-2507"
+    adapter_model_path = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/sft_model/sft_model"  # Stage 1 output
 
     print(f"[Stage 2] Loading base_model_path = {base_model_path}")
     print(f"[Stage 2] Loading adapter_model_path = {adapter_model_path}")
 
     model, tokenizer = load_model(
-        base_model_name=BASE_MODEL_NAME,
+        base_model_name=base_model_path,
         adapter_model_path=adapter_model_path,
-        mode="train",
+        mode="train",          # keep in train mode for further fine-tuning
         fast_inference=True,
-        load_in_4bit=False,
+        max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
+        load_in_4bit=True,
         env_name=ENV_NAME,
     )
     print("Model and tokenizer loaded.")
@@ -3485,18 +3509,8 @@ if MODE in ("grpo", "rc_grpo"):
     print(f"  pad_token: {tokenizer.pad_token}")
     print(f"  additional_special_tokens: {tokenizer.additional_special_tokens}")
 
-    from pathlib import Path
     from datasets import Dataset
-    if MODE in ("grpo", "rc_grpo"):
-        dataset_path = TRAIN_CONFIG["data"].get("grpo_stage2_path", TRAIN_CONFIG["data"]["grpo_path"])
-        if not Path(dataset_path).exists():
-            print(f"[Stage 2] Stage2 dataset not found at {dataset_path}, falling back to original grpo_path")
-            dataset_path = TRAIN_CONFIG["data"]["grpo_path"]
-        else:
-            print(f"[Stage 2] Using stage2 dataset: {dataset_path}")
-    else:
-        dataset_path = TRAIN_CONFIG["data"]["grpo_path"]
-    dataset = Dataset.from_list(load_jsonl(dataset_path))
+    dataset = Dataset.from_list(load_jsonl(TRAIN_CONFIG["data"]["grpo_path"]))
 
     grpo_args = build_grpo_config(TRAIN_CONFIG, output_dir=TRAIN_CONFIG["training"]["output_dir"])
 
@@ -3542,12 +3556,11 @@ if MODE in ("grpo", "rc_grpo"):
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
     print(f"Model saved to {output_dir}")
-    !zip -r {output_dir.split("/")[-1]}.zip {output_dir}
+    !zip -r {output_dir}.zip {output_dir}
     from IPython.display import FileLink
-    FileLink(f"{output_dir.split("/")[-1]}.zip")
+    FileLink(f"{output_dir}.zip")
 else:
     print(f"Skipping Stage 2 (MODE={MODE}).")
-
 ```
 
 ```python
@@ -3582,22 +3595,10 @@ if ENV_NAME == "colab":
 
 ```python
 # ===================== EVALUATION =====================
-apply_env_overrides(TRAIN_CONFIG, "eval")  # ensure no vLLM standby after training
+os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval: ensures no dual vLLM engines; gpu_memory_utilization is passed explicitly from TRAIN_CONFIG
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
-    # ── Build seen-functions set from train schema ─────────────────────
-    seen_functions: set[str] = set()
-    schema_path = DATA_DIR / "function_schema_train.json"
-    if schema_path.exists():
-        with open(schema_path) as f:
-            seen_functions = set(json.load(f).keys())
-        print(f"[Eval] Loaded {len(seen_functions)} seen functions from train schema")
-    else:
-        print(f"[Eval] Train schema not found at {schema_path}; seen-functions split disabled")
-        seen_functions = None
-
-    retriever = FunctionRetriever(function_library, method="hybrid",
-                                   encoder_model="AITeamVN/Vietnamese_Embedding_v2")
+    retriever = FunctionRetriever(function_library, method="hybrid")
     sandbox = Sandbox(function_library)
 
     eval_result = evaluate_model(
@@ -3614,7 +3615,6 @@ if Path(test_dataset_path).exists():
         use_vllm=EVAL_USE_VLLM,
         batch_size=TRAIN_CONFIG["data"]["eval_batch_size"],
         gpu_memory_utilization=TRAIN_CONFIG["model"]["gpu_memory_utilization"],
-        seen_functions=seen_functions,  # type: ignore[arg-type]
     )
     from tabulate import tabulate
     agg = eval_result["aggregate"]
@@ -3640,32 +3640,12 @@ if Path(test_dataset_path).exists():
             rows.append([display_name, f"{mean_val:.4f}"])
     print(f"\nEvaluation Benchmark \u2014 {MODE}")
     print(tabulate(rows, headers=["Metric", "Value"], tablefmt="grid"))
-
-    # ── Per-category breakdown ─────────────────────────────────────────
-    per_category = eval_result.get("per_category", {})
-    if per_category:
-        print(f"\n{'=' * 80}")
-        print(f"  PER-CATEGORY BREAKDOWN")
-        print(f"{'=' * 80}")
-        for cat in ("seen", "unseen", "abstention"):
-            cat_agg = per_category.get(cat)
-            if cat_agg is None:
-                continue
-            cat_rows = []
-            for display_name, key in metric_names:
-                mean_val = cat_agg.get(key, float("nan"))
-                std_val = cat_agg.get(f"{key}__std", float("nan"))
-                if isinstance(std_val, (int, float)) and not math.isnan(std_val):
-                    cat_rows.append([display_name, f"{mean_val:.4f} \u00b1 {std_val:.4f}"])
-                else:
-                    cat_rows.append([display_name, f"{mean_val:.4f}"])
-            print(f"\n  \u2500\u2500 {cat.upper()} ({cat_agg.get('function_selection_accuracy__count', 0):,} samples) \u2500\u2500")
-            print(tabulate(cat_rows, headers=["Metric", "Value"], tablefmt="grid"))
-
     generate_report([eval_result])
+    !zip -r {MODE_OUTPUT_DIR}.zip {MODE_OUTPUT_DIR}
+    from IPython.display import FileLink
+    FileLink(f"{MODE_OUTPUT_DIR}.zip")
 else:
     print("Test dataset not found; skipping evaluation.")
-
 ```
 
 ```python
