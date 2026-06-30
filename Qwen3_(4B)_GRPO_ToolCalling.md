@@ -3036,6 +3036,8 @@ TRAIN_CONFIG = {
         "sft_path": str(DATA_DIR / "sft_dataset.jsonl"),
         "grpo_path": str(DATA_DIR / "grpo_dataset.jsonl"),
         "rctp_path": str(DATA_DIR / "rctp_dataset.jsonl"),
+        "grpo_stage2_path": str(DATA_DIR / "grpo_dataset_stage2.jsonl"),
+        "rcgrpo_stage2_path": str(DATA_DIR / "grpo_dataset_stage2.jsonl"),
         "max_prompt_length": 7680,
         "max_completion_length": 512,
         "include_all_threshold": 5,
@@ -3398,8 +3400,18 @@ if MODE in ("grpo", "rc_grpo"):
     print(f"  pad_token: {tokenizer.pad_token}")
     print(f"  additional_special_tokens: {tokenizer.additional_special_tokens}")
 
+    from pathlib import Path
     from datasets import Dataset
-    dataset = Dataset.from_list(load_jsonl(TRAIN_CONFIG["data"]["grpo_path"]))
+    if MODE in ("grpo", "rc_grpo"):
+        dataset_path = TRAIN_CONFIG["data"].get("grpo_stage2_path", TRAIN_CONFIG["data"]["grpo_path"])
+        if not Path(dataset_path).exists():
+            print(f"[Stage 2] Stage2 dataset not found at {dataset_path}, falling back to original grpo_path")
+            dataset_path = TRAIN_CONFIG["data"]["grpo_path"]
+        else:
+            print(f"[Stage 2] Using stage2 dataset: {dataset_path}")
+    else:
+        dataset_path = TRAIN_CONFIG["data"]["grpo_path"]
+    dataset = Dataset.from_list(load_jsonl(dataset_path))
 
     grpo_args = build_grpo_config(TRAIN_CONFIG, output_dir=TRAIN_CONFIG["training"]["output_dir"])
 
