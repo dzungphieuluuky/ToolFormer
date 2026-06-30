@@ -67,15 +67,13 @@ class CatalogEntry:
 
 @dataclass
 class ValueMatch:
-    """Result of value matching — serializable for JSON output.
+    """Result of value matching — serializable for JSON output."""
 
-    Attributes:
-        code: Matched value code.
-        label: Human-readable label.
-        group: Category/group name.
-        score: Match confidence score (0.0 to 1.0).
-        alt_label: Alternative label if available.
-    """
+    code: str
+    label: str
+    group: str = ""
+    score: float = 0.0
+    alt_label: str = ""
 
 
 class ValueCatalog:

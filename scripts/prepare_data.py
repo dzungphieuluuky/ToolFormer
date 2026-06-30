@@ -343,17 +343,17 @@ def main() -> None:
     if not args.skip_generation:
         total = args.total or dg_cfg.get("total_samples", 2400)
         logger.info(
-            f"Generating {total} samples via {dg_cfg.get('provider', 'openrouter')}..."
+            f"Generating {total} samples via {dg_cfg.get('provider', 'opencode')}..."
         )
 
-        model_name = args.model or dg_cfg.get("model", "openai/gpt-oss-120b:free")
+        model_name = args.model or dg_cfg.get("model", "deepseek-v4-flash-free")
         generator = TelcoDatasetGenerator.from_schemas(
             train_schema_path=str(train_schema_path),
             test_schema_path=str(test_schema_path),
-            provider=dg_cfg.get("provider", "openrouter"),
+            provider=dg_cfg.get("provider", "opencode"),
             model=model_name,
-            api_key=os.getenv(dg_cfg.get("api_key_env", "OPENROUTER_API_KEY")),
-            base_url=dg_cfg.get("base_url"),
+            api_key=os.getenv(dg_cfg.get("api_key_env", "OPENCODE_API_KEY")),
+            base_url=dg_cfg.get("base_url") or "https://opencode.ai/zen/v1",
             max_workers=dg_cfg.get("max_workers", 12),
             requests_per_minute=dg_cfg.get("requests_per_minute", 500),
             temperature=dg_cfg.get("temperature", 0.9),

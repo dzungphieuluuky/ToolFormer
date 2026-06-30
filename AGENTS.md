@@ -1,149 +1,174 @@
 # ToolFormer — Agent Guide
 
-**Updated:** 2026-06-30 — add Sisyphus execution rule
-**Commit:** `a253f9a` on `main`
+**Updated:** 2026-06-30 — complete rewrite with best-practice-first rule
 
-## Sisyphus Execution Rule (ABSOLUTE)
+## Execution Rules
 
-Sisyphus is the ONLY agent allowed to execute tasks. He will execute every task directly and alone. He will NOT spawn any sub-agents. No delegation. No background workers. Every edit, command, grep, and read is done by Sisyphus himself.
+### Sisyphus Execution Rule (ABSOLUTE)
+Sisyphus is the ONLY agent allowed to execute tasks. He will execute every task directly and alone. No sub-agents, no delegation, no background workers. Every edit, command, grep, and read is done by Sisyphus himself.
 
-Telecom tool-calling RL project: fine-tuning Qwen3-4B on function calling using RC-GRPO (Reward-Conditioned GRPO). Built on Unsloth + TRL. Pure research — no tests, no linter, no type checker, no CI, no git hooks.
+### Best-Practice-First Rule (ABSOLUTE)
+Before implementing ANY mechanism, function, or utility from a request, ALWAYS search the internet (web search + official docs) for best practices and methods that would yield the highest performance with the lowest failure rate. Do not default to naive implementations when proven patterns exist. Reference specific sources in your approach.
 
-Codegraph is **indexed** — use `codegraph_explore` before reading source files.
-`DATASET.md` at root documents dataset v1.0_k5 — token stats, workflow distributions, retrieval figures.
+## Project Overview
+
+Telecom tool-calling RL project: fine-tuning Qwen3-4B for Vietnamese telecom function calling using RC-GRPO (Reward-Conditioned GRPO). Built on Unsloth + TRL. Pure research — **no tests, no linter, no type checker, no CI, no git hooks.**
+
+The notebook (`Qwen3_(4B)_GRPO_ToolCalling.ipynb`) is the **sole implementation** — training, eval, inference all inline (~11k lines, 30 cells). It does NOT import `scripts/` at runtime; it loads pre-built datasets only.
+
+## Quick Start
+
+```bash
+conda activate unsloth_telco
+# Then open and run the notebook in Colab, Kaggle, or locally.
+```
+
+Secrets (set as env vars): `OPENCODE_API_KEY` (data gen), `OPENROUTER_API_KEY` (legacy fallback), `WANDB_API_KEY`, `HF_TOKEN`.
 
 ## Entrypoints
 
 | File | Role |
 |------|------|
-| `Qwen3_(4B)_GRPO_ToolCalling.ipynb` | **Sole implementation** — training, eval, inference, all inline (~10.5k lines, 30 cells). Does **not** import `scripts/` or `src/`. |
-| `scripts/` | Standalone CLI data pipeline. Each script runs independently. Notebook loads pre-built datasets only. |
-| `config/*.yaml` | Reference only. Notebook's hardcoded `TRAIN_CONFIG` dict wins when they diverge. |
-| `PIPELINE.md` | Architectural walkthrough of the notebook. Reference for details not covered here. |
-| `DATASET.md` | Dataset inventory, token statistics, workflow distributions, function retrieval breakdowns. |
-| `README.md` | **Stale** — references scripts that were never implemented. Ignore it. |
+| `Qwen3_(4B)_GRPO_ToolCalling.ipynb` | **Sole training implementation**. Edit via jupytext: `jupytext --sync Qwen3_(4B)_GRPO_ToolCalling.ipynb` |
+| `scripts/` | Standalone CLI data pipeline. Each script runs independently. |
+| `DATASET.md` | Dataset inventory, token stats, workflow distributions, retrieval figures. |
+| `PIPELINE.md` | Architectural walkthrough of the notebook. |
+| `README.md` | **Stale** — ignore it. |
 
-## Quick start
+## Training Modes
 
-```bash
-conda activate unsloth_telco
-# Then open and run the notebook in Colab, Kaggle, or locally.
-# No other entrypoints exist for training.
-```
+Set `MODE` in the notebook cell 23:
 
-Secrets (optional): `OPENROUTER_API_KEY`, `WANDB_API_KEY`, `HF_TOKEN`.
+| Mode | Trainer | Dataset | Use |
+|------|---------|---------|-----|
+| `sft` | `SFTTrainer` | `sft_dataset.jsonl` | Supervised fine-tuning on expert demos |
+| `rctp_ft` | `SFTTrainer` | `rctp_dataset.jsonl` | Stage 1: reward-conditioned trajectory policy |
+| `grpo` | `GRPOTrainer` | `grpo_dataset_stage2.jsonl` | Vanilla GRPO baseline |
+| `rc_grpo` | `RCGRPOTrainer` | `rcgrpo_dataset_stage2.jsonl` | Stage 2: RC-GRPO (RL with reward-token conditioning) |
+
+GRPO/RC-GRPO auto-select `*_stage2.jsonl` with fallback to original files.
 
 ## Environment
 
-- **Python >=3.12**, conda `unsloth_telco`, CUDA 12.1+ (`.python-version`)
+- **Python >=3.12**, conda `unsloth_telco`, CUDA 12.1+
 - `pyproject.toml` declares zero runtime deps — all deps in `requirements.txt` / `uv.lock`, installed by the notebook, not by `pip install -e .`
-- `.venv/` exists locally; pre-quantized weights at `unsloth-Qwen3-4B-unsloth-bnb-4bit/`
-- Notebook auto-detects Colab/Kaggle/local and adjusts paths (Kaggle overrides model path to local cached copy)
+- Pre-quantized weights at `unsloth-Qwen3-4B-unsloth-bnb-4bit/`
+- Notebook auto-detects Colab/Kaggle/local and adjusts paths
 
-## Training (set `MODE` in the notebook)
+## Configuration: TRAIN_CONFIG is the Source of Truth
 
-| MODE | Trainer | Dataset | Description |
-|------|---------|---------|-------------|
-| `sft` | `SFTTrainer` | `sft_dataset.jsonl` | Supervised fine-tuning on expert demos |
-| `rctp_ft` | `SFTTrainer` | `rctp_dataset.jsonl` | Stage 1: Reward-Conditioned Trajectory Policy FT |
-| `grpo` | `GRPOTrainer` | `grpo_dataset.jsonl` | Vanilla GRPO baseline |
-| `rc_grpo` | `RCGRPOTrainer` | `rcgrpo_dataset.jsonl` | Stage 2: RC-GRPO (RL with reward-token conditioning) |
+The notebook has a hardcoded `TRAIN_CONFIG` dict. The `config/*.yaml` files (for scripts via OmegaConf) **diverge** from the notebook. When they disagree, the notebook wins.
 
-Only SFT has trained weights: `outputs/sft_model/checkpoint-1335/`. GRPO / RC-GRPO directories exist but are empty. No other entrypoints for training exist.
+Key divergences (YAML → notebook):
+- `num_generations: 8` → `5`
+- `kl_coef: 0.04` → `0.1`
+- `max_grad_norm: 0.1` → `1.0`
+- `gpu_memory_utilization: 0.7` → `0.5`
+- `args_threshold: 0.8` → exact binary match
 
-## Model config (`TRAIN_CONFIG` in notebook — source of truth)
-
-| Parameter | SFT | RCTP-FT | GRPO / RC-GRPO |
-|-----------|-----|---------|----------------|
-| Base model | `unsloth/Qwen3-4B-Instruct-2507` | same | same |
-| LoRA rank | 16 | 16 | 16 |
-| 4-bit | yes | yes | yes + `fast_inference=True` |
-| Max seq len | **8192** | 8192 | 8192 |
-| LR | 2e-5 | 2e-5 | 1e-6 |
-| Batch / grad accum | 2 / 8 | 2 / 8 | 2 / 8 |
-| Epochs | 3 | 3 | — (max_steps=50 test / 500 full) |
-| Num generations | — | — | 5 |
-| Optimizer | `adamw_8bit` | `adamw_8bit` | `adamw_8bit` |
-
-Config YAMLs (`config/*.yaml`) diverge from the notebook. Notable: `num_generations: 8` (YAML) vs 5 (notebook), `kl_coef: 0.04` vs 0.1, `max_grad_norm: 0.1` vs 1.0, `gpu_memory_utilization: 0.7` vs 0.5, `args_threshold: 0.8` vs exact binary match. The notebook wins.
-
-## Critical gotchas
+## Critical Gotchas
 
 ### Unified `load_model()` — 4 branches
-The notebook has one `load_model()` function that handles all loading. Its branching:
-
 | Condition | What happens | Used by |
 |-----------|-------------|---------|
-| `adapter_model_path` set + `mode="train"` | Tokenizer from checkpoint → load base (internal GRPO patching) → resize → `PeftModel.from_pretrained` | GRPO/RC-GRPO resume |
+| `adapter_model_path` set + `mode="train"` | Tokenizer from checkpoint → load base (GRPO patching) → resize → `PeftModel.from_pretrained` | GRPO/RC-GRPO resume |
 | `adapter_model_path` set + `mode="inference"` | Tokenizer from checkpoint → load base → resize → `PeftModel.from_pretrained` → `for_inference()` | Evaluation from checkpoint |
 | `adapter_model_path=None` + `mode="train"` | Tokenizer from base → load base → `patch_tokenizer_for_custom_roles` → `add_new_tokens` → `get_peft_model` (fresh LoRA) | SFT/RCTP-FT from scratch |
-| `adapter_model_path=None` + `mode="inference"` | Tokenizer from base model → load base → `for_inference()` | Base model benchmarking |
+| `adapter_model_path=None` + `mode="inference"` | Tokenizer from base → load base → `for_inference()` | Base model benchmarking |
 
 ### Dual GPU memory pools
-The notebook manages **two separate vLLM memory reservations**:
+Two separate vLLM reservations that must be understood together:
+- `gpu_memory_utilization`: Unsloth's engine. `0.3` when `UNSLOTH_VLLM_STANDBY=0` (SFT/RCTP-FT), `0.8` when `=1` (GRPO/RC-GRPO).
+- `vllm_gpu_memory_utilization`: TRL's engine (in `GRPOConfig`). Hardcoded `0.3`.
 
-| Parameter | Controls | Value logic |
-|-----------|----------|------------|
-| `gpu_memory_utilization` | Unsloth's vLLM engine (in `load_model()`) | `0.3` when `UNSLOTH_VLLM_STANDBY=0` (SFT/RCTP-FT), `0.8` when `=1` (GRPO/RC-GRPO) |
-| `vllm_gpu_memory_utilization` | TRL's internal vLLM for generation (`GRPOConfig`) | `0.3` (hardcoded in `build_grpo_config()`) |
-
-With `UNSLOTH_VLLM_STANDBY=1` + `vllm_enable_sleep_mode=True`, Unsloth engine offloads to CPU on startup and TRL's engine offloads during optimizer steps. Changing either value without understanding the split can OOM.
+With `UNSLOTH_VLLM_STANDBY=1` + `vllm_enable_sleep_mode=True`, Unsloth engine offloads to CPU on startup and TRL's engine offloads during optimizer steps. Changing either without understanding the split can OOM.
 
 ### `load_in_4bit` + `fast_inference` interaction
-`fast_inference=True` (needed for GRPO vLLM) is compatible with `load_in_4bit=True`, but `max_lora_rank` can only be passed alongside `load_in_4bit` when `fast_inference=False`. The unified `load_model()` handles this: `max_lora_rank` is added to kwargs when `mode == "train"` (any training mode, including checkpoint resume with `fast_inference=True` where Unsloth silently ignores it).
+`fast_inference=True` (needed for GRPO vLLM) is compatible with `load_in_4bit=True`, but `max_lora_rank` can only be passed alongside `load_in_4bit` when `fast_inference=False`. The unified `load_model()` handles this.
 
-### Reward token injection location
-Injected into the **system message**, not the user message (departs from the paper's Appendix B diagram). Both `_format_trajectory()` (RCTP-FT) and `inject_reward_token_into_prompt()` (RC-GRPO) target the system content before `<|im_end|>`.
+### Reward token injection
+Injected into the **system message** (not user message — departs from paper's Appendix B diagram). Both `_format_trajectory()` (RCTP-FT) and `inject_reward_token_into_prompt()` (RC-GRPO) target the system content before `<|im_end|>`.
 
 ### vLLM stop token
 ```python
-SamplingParams(
-    stop=["</tool_call>"],
-    include_stop_str_in_output=True,  # stop string INCLUDED in output
-)
+SamplingParams(stop=["</tool_call>"], include_stop_str_in_output=True)
 ```
 
-### Data paths
-`TRAIN_CONFIG["data"]` points to `data/generated/v1.0/`. The active dataset is `v1.0_k5/` (top-5 functions, per-sample argument values, 31 telecom functions, 3553 train / 2075 test records). A `data/generated/v2.0/` copy exists but is not referenced by the notebook. See `DATASET.md` for full inventory and token statistics.
+### Prompt truncation & generation tokens
+- **Training**: `max_prompt_length=7680`, `max_completion_length=512`, `vllm_max_model_length=8192`
+- **Data generation**: `max_tokens=8192` (in `generate_stage2_dataset.py` PROVIDER_CHAIN) — must match the model's full context window since each API call generates multiple samples per response
+- Zero training prompts exceed limits (max actual: 5476 tokens)
 
-### Prompt truncation fix (2026-06-27)
-`max_prompt_length` raised from 3584 to **7680** (and `max_completion_length` from 256 to **512**), eliminating the 9.9% truncation rate for GRPO prompts. `vllm_max_model_length` set to 8192 (matches `max_seq_length`). Zero prompts now exceed limits (max actual: 5476 tokens).
-
-### `src/utils/logging_utils.py`
-Exists but **not used** by the notebook (inline logging instead).
-
-## Data pipeline (scripts/ — CLI only)
+## Data Pipeline (scripts/ — CLI only)
 
 ```
-prepare_data.py      → orchestrator (parses schema, generates data, enriches)
-  data_generator.py  → LLM API → synthetic (query, ground_truth) pairs
-  validate_dataset.py → quality checks → *_cleaned.jsonl (~11% dropped)
-  generate_failures.py → three-tier failure generation (LLM / heuristic / legacy)
-  build_datasets.py  → gold + failures → sft/grpo/rcgrpo/rctp dataset files
-  retrieval.py       → BM25/hybrid function retrieval (Vietnamese-aware)
-  value_catalog.py   → argument value lookup with scoring
+generate_stage2_dataset.py  → generate, clean, build GRPO/RC-GRPO via TelcoDatasetGenerator
+  data_generator.py         → LLM API → synthetic (query, ground_truth) pairs
+  validate_dataset.py       → quality checks → *_cleaned.jsonl
+  clean_dataset.py          → dedup + validate + standardize schema
+  generate_failures.py      → three-tier failure generation (LLM / heuristic / legacy)
+  build_datasets.py         → gold + failures → all 4 dataset formats
+  retrieval.py              → BM25/hybrid function retrieval (Vietnamese-aware)
 ```
 
-Each script runs standalone. See `scripts/AGENTS.md` for details.
+### Key conventions
+- All scripts import via `sys.path.insert(0, ...)` to resolve project root, not by package install.
+- Scripts load config via OmegaConf from `config/` YAMLs; notebook uses hardcoded `TRAIN_CONFIG` dict.
+- Logging: scripts use Python `logging`; notebook uses `print()` and `get_logger()`.
+- No test framework, no type annotations enforced.
 
-## Key conventions
+### Provider chain (for data generation)
+`generate_stage2_dataset.py` tries providers in order: OpenRouter → OpenCode Zen. API keys from `OPENROUTER_API_KEY` / `OPENCODE_API_KEY` env vars. The script has built-in `_RateState` rate limiter + circuit breaker + checkpoint/resume.
 
-- All `scripts/` import via `sys.path.insert(0, ...)` to resolve project root, not by package install
-- Config loaded via OmegaConf from `config/` YAMLs (for scripts), but the notebook uses a hardcoded `TRAIN_CONFIG` dict
-- Logging: scripts use Python logging; the notebook uses inline `print()` and a `get_logger()` helper
-- Data is generated in `data/generated/v1.0/`; training runs output to `outputs/{mode}_model/`
-- The `smart_truncate()` function exists as legacy (preserved, disabled) — 8192 max_seq_len fits all samples with compact per-sample argument values
-- `vllm_enable_sleep_mode=True` is used in `GRPOConfig` to share GPU with the main model
-- On Colab, the eval cell downloads the model from HF Hub (`dzungpham/telecom-toolcaller`) into `MODE_OUTPUT_DIR` via `snapshot_download` before loading it. Kaggle and local are unaffected.
+### Default embedding model
+`AITeamVN/Vietnamese_Embedding_v2` — cached locally in `.cache/encoders/`. FunctionRetriever auto-downloads and provides `cleanup_encoder()`.
 
-## Quick verification commands
+## Active Dataset
+
+`data/generated/v1.0_k5/` (31 telecom functions, top-5 retrieval, per-sample argument values).
+
+| File | Records | Notes |
+|------|---------|-------|
+| `train_dataset_cleaned.jsonl` | 3,553 | Gold training set |
+| `test_dataset_cleaned.jsonl` | 2,075 | Gold test set |
+| `sft_dataset.jsonl` | 3,553 | SFT format |
+| `grpo_dataset_stage2.jsonl` | — | Stage2 GRPO (generated) |
+| `rcgrpo_dataset_stage2.jsonl` | — | Stage2 RC-GRPO (generated) |
+| `rctp_dataset.jsonl` | 6,596 | RCTP trajectories |
+| `failures_dataset.jsonl` | 3,043 | Failure trajectories |
+
+Stage2 datasets must be generated via `python scripts/generate_stage2_dataset.py`. They are NOT checked in.
+
+## Useful Commands
 
 ```bash
-grep "vllm_gpu_memory_utilization" Qwen3_(4B)_GRPO_ToolCalling.ipynb
-ls outputs/*/                            # check training outputs
-ls data/generated/v1.0/*.jsonl | head   # check dataset files
-cat DATASET.md                           # dataset inventory
-python scripts/build_datasets.py --input-base data/generated/v1.0/train_dataset_cleaned.jsonl
-python scripts/validate_dataset.py --input data/generated/v1.0/train_dataset.jsonl
-python scripts/inspect_dataset.py data/generated/v1.0/train_dataset_cleaned.jsonl
+# Jupytext workflow (edit .md, sync to .ipynb)
+jupytext --to md Qwen3_(4B)_GRPO_ToolCalling.ipynb -o Qwen3_(4B)_GRPO_ToolCalling.md
+# Edit the .md, then:
+jupytext --sync Qwen3_(4B)_GRPO_ToolCalling.ipynb
+
+# Generate stage2 dataset
+python scripts/generate_stage2_dataset.py
+
+# Evaluate retriever with the default embedding model
+python scripts/evaluate_retriever.py --methods bm25 hybrid 2>&1
+
+# Inspect dataset stats
+python scripts/inspect_dataset.py data/generated/v1.0_k5/train_dataset_cleaned.jsonl
+
+# Validate dataset
+python scripts/validate_dataset.py --data-dir data/generated/v1.0_k5
+
+# Build all 4 training datasets (from cleaned gold + failures)
+python scripts/build_datasets.py \
+  --input-base data/generated/v1.0_k5/train_dataset_cleaned.jsonl \
+  --input-failures data/generated/v1.0_k5/failures_dataset.jsonl \
+  --output-dir data/generated/v1.0_k5 \
+  --function-library data/generated/v1.0_k5/function_library.json \
+  --argument-values data/generated/v1.0_k5/argument_values.json
 ```
+
+## `opencode.json` Permission Constraints
+- `python3 *`: allow | `git *`: allow (except `git push`: deny, `git commit`: ask)
+- `rm -rf *`: ask | `sudo *`: deny
+- `gh *delete*`, `gh org *`, `gh secret *`: deny

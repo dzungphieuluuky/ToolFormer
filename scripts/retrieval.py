@@ -14,6 +14,7 @@ import calendar
 import json
 import pickle
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -170,6 +171,7 @@ class FunctionRetriever:
         bm25_weight: float = 0.5,
         emb_weight: float = 0.5,
         index_dir: str | None = None,
+        encoder_cache_dir: str = ".cache/encoders",
     ):
         self.library = function_library
         self.method = method
@@ -177,6 +179,8 @@ class FunctionRetriever:
         self.bm25_weight = bm25_weight
         self.emb_weight = emb_weight
         self.index_dir = index_dir
+        self._encoder_model_name = encoder_model
+        self._encoder_cache_dir = encoder_cache_dir
 
         # Build search corpus — normalize everything
         self._search_texts: list[str] = []
@@ -197,6 +201,36 @@ class FunctionRetriever:
             self._init_embeddings(encoder_model)
 
     @staticmethod
+    def _resolve_encoder_path(model_name: str, cache_dir: str = ".cache/encoders") -> str:
+        """Download model to local cache if needed, return local path.
+
+        If ``model_name`` is already a local path that exists, returns it
+        as-is. Otherwise downloads via ``huggingface_hub.snapshot_download``
+        into ``cache_dir / model_slug`` (where slug = model_name with ``/``
+        replaced by ``_``), then returns that local path so
+        ``SentenceTransformer`` loads from disk instead of the HF cache.
+        """
+        model_path = Path(model_name)
+        if model_path.exists():
+            return str(model_path.resolve())
+
+        local_dir = Path(cache_dir) / model_name.replace("/", "_")
+        if local_dir.exists():
+            print(f"    Encoder already cached at {local_dir}")
+            return str(local_dir)
+
+        from huggingface_hub import snapshot_download
+
+        print(f"    Downloading encoder model {model_name} -> {local_dir} ...")
+        snapshot_download(
+            repo_id=model_name,
+            local_dir=str(local_dir),
+            local_dir_use_symlinks=False,
+        )
+        print(f"    Download complete.")
+        return str(local_dir)
+
+    @staticmethod
     def _build_search_text(name: str, schema: dict) -> str:
         """Build a rich searchable string from function schema."""
         parts = [name]
@@ -212,7 +246,8 @@ class FunctionRetriever:
     def _init_embeddings(self, model_name: str):
         from sentence_transformers import SentenceTransformer
 
-        self._encoder = SentenceTransformer(model_name)
+        local_path = self._resolve_encoder_path(model_name, self._encoder_cache_dir)
+        self._encoder = SentenceTransformer(local_path)
         self._embeddings = self._encoder.encode(
             self._search_texts,
             convert_to_numpy=True,
@@ -281,6 +316,26 @@ class FunctionRetriever:
             obj: FunctionRetriever = pickle.load(fh)
         obj.library = function_library
         return obj
+
+    def cleanup_encoder(self) -> None:
+        """Remove the locally cached encoder model directory and release resources."""
+        if self._encoder is None or self._encoder_model_name is None:
+            return
+        slug = self._encoder_model_name.replace("/", "_")
+        cache_path = Path(self._encoder_cache_dir) / slug
+        if cache_path.exists():
+            shutil.rmtree(cache_path)
+            print(f"    Cleaned up encoder cache at {cache_path}")
+        self._encoder = None
+        self._embeddings = None
+
+    def __enter__(self) -> "FunctionRetriever":
+        """Context manager entry — returns self."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit — cleans up encoder cache."""
+        self.cleanup_encoder()
 
 
 # ═════════════════════════════════════════════════════════════════════

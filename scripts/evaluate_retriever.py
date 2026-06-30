@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -64,46 +63,6 @@ def _load_json(path: Path) -> dict:
         sys.exit(1)
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
-
-def _download_encoder_local(model_name: str, cache_dir: Path) -> Path:
-    """Download an encoder model to a local directory and return its path.
-
-    Uses ``huggingface_hub.snapshot_download`` to download the model
-    into ``cache_dir / model_slug`` (where slug is ``model_name`` with
-    ``/`` replaced by ``_``), then returns that local path so
-    ``SentenceTransformer`` loads from disk instead of the HF cache.
-
-    If the model is already a local path (no ``/`` and the path exists),
-    returns it as-is.
-    """
-    model_path = Path(model_name)
-    if model_path.exists():
-        return model_path.resolve()
-
-    local_dir = cache_dir / model_name.replace("/", "_")
-    if local_dir.exists():
-        print(f"    Encoder already cached at {local_dir}")
-        return local_dir
-
-    from huggingface_hub import snapshot_download
-
-    print(f"    Downloading encoder model {model_name} -> {local_dir} ...")
-    snapshot_download(
-        repo_id=model_name,
-        local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
-    )
-    print(f"    Download complete.")
-    return local_dir
-
-
-def _cleanup_encoder_dir(cache_dir: Path, model_name: str) -> None:
-    """Remove the locally downloaded encoder model directory."""
-    local_dir = cache_dir / model_name.replace("/", "_")
-    if local_dir.exists():
-        shutil.rmtree(local_dir)
-        print(f"    Cleaned up encoder weights at {local_dir}")
 
 
 def _extract_relevant(sample: dict) -> set[str]:
@@ -529,23 +488,12 @@ def main() -> None:
         print(f"\nEvaluating {label} retriever ...")
         encoder = args.encoder if method == "hybrid" else None
 
-        local_encoder: str | None = None
-        cleanup_needed = False
-        if encoder is not None:
-            local_encoder = str(_download_encoder_local(encoder, cache_dir))
-            cleanup_needed = True
-
-        try:
-            retriever = FunctionRetriever(
-                function_library=function_library,
-                method=method,
-                encoder_model=local_encoder,
-            )
+        with FunctionRetriever(
+            function_library=function_library,
+            method=method,
+            encoder_model=encoder,
+        ) as retriever:
             result = evaluate_retriever(retriever, test_samples, k_values, label=label)
-        finally:
-            if cleanup_needed:
-                assert encoder is not None
-                _cleanup_encoder_dir(cache_dir, encoder)
 
         print(
             f"  Done in {result['time_seconds']:.2f}s.  "

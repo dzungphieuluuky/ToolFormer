@@ -46,13 +46,9 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
 from tqdm.auto import tqdm
+
+from scripts.retrieval import FunctionRetriever
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logger = logging.getLogger(__name__)
@@ -71,6 +67,70 @@ logging.getLogger("tenacity.retry").setLevel(logging.WARNING)
 # ──────────────────────────────────────────────────────────────────────────────
 # Data structures
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class _RateState:
+    """Tracks API rate limits dynamically from response headers."""
+    rpm_remaining: int = 20
+    rpm_limit: int = 20
+    rpm_reset_at: float = 0.0
+    consecutive_429: int = 0
+    circuit_open_until: float = 0.0
+    circuit_cooldown: float = 60.0
+
+    def can_send(self, now: float | None = None) -> tuple[bool, float]:
+        """Check if we can send a request. Returns (can_send, wait_seconds)."""
+        if now is None:
+            now = time.time()
+        if now < self.circuit_open_until:
+            wait = self.circuit_open_until - now
+            return False, wait
+        if self.rpm_remaining <= 2 and self.rpm_reset_at > now:
+            wait = self.rpm_reset_at - now
+            return False, wait
+        return True, 0.0
+
+    def record_success(self, headers: dict, now: float | None = None) -> None:
+        """Update state from response headers on success."""
+        if now is None:
+            now = time.time()
+        self.consecutive_429 = 0
+        self.circuit_open_until = 0.0
+        if "x-ratelimit-remaining" in headers:
+            try:
+                self.rpm_remaining = int(headers["x-ratelimit-remaining"])
+            except (ValueError, TypeError):
+                pass
+        if "x-ratelimit-limit" in headers:
+            try:
+                self.rpm_limit = int(headers["x-ratelimit-limit"])
+            except (ValueError, TypeError):
+                pass
+        if "x-ratelimit-reset" in headers:
+            try:
+                self.rpm_reset_at = int(headers["x-ratelimit-reset"]) / 1000.0
+            except (ValueError, TypeError):
+                pass
+
+    def record_429(self, retry_after: int | None = None, now: float | None = None) -> float:
+        """Record a 429 and return how long to wait."""
+        if now is None:
+            now = time.time()
+        self.consecutive_429 += 1
+        if retry_after:
+            wait = float(retry_after)
+        else:
+            wait = min(120, 2 ** (self.consecutive_429 + 3))
+        if self.consecutive_429 >= 3:
+            self.circuit_open_until = now + self.circuit_cooldown
+            logger.warning(
+                "CIRCUIT BREAKER: %d consecutive 429s — pausing all requests for %.0fs",
+                self.consecutive_429, self.circuit_cooldown
+            )
+            self.circuit_cooldown = min(self.circuit_cooldown * 2, 480.0)
+            self.consecutive_429 = 0
+        return wait
 
 
 @dataclass
@@ -104,10 +164,12 @@ class _APIClient:
         model: str,
         api_key: str,
         base_url: str | None = None,
+        rate_state: _RateState | None = None,
     ):
         self.provider = provider.lower()
         self.model = model
         self._client = self._build_client(api_key, base_url)
+        self._rate_state = rate_state
 
     def _build_client(self, api_key: str, base_url: str | None):
         if self.provider == "openai":
@@ -128,6 +190,14 @@ class _APIClient:
                     "HTTP-Referer": "https://github.com/telco-agent-rl",
                     "X-OpenRouter-Title": "Telco Agent RL",
                 },
+            )
+
+        elif self.provider == "opencode":
+            from openai import OpenAI
+
+            return OpenAI(
+                api_key=api_key,
+                base_url=base_url or "https://opencode.ai/zen/v1",
             )
 
         elif self.provider == "anthropic":
@@ -173,12 +243,30 @@ class _APIClient:
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30),
-        retry=retry_if_exception_type(Exception),
-        reraise=True,
-    )
+    def _is_rate_limit(self, exc: Exception) -> bool:
+        """Check if an exception is a rate-limit (429) error."""
+        status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+        return status == 429
+
+    def _get_retry_after(self, exc: Exception) -> int | None:
+        """Extract Retry-After seconds from an API error response."""
+        try:
+            resp = getattr(exc, "response", None) or getattr(exc, "body", None)
+            if isinstance(resp, dict) and resp.get("headers"):
+                ra = resp["headers"].get("Retry-After")
+                if ra:
+                    return int(ra)
+        except (ValueError, AttributeError, TypeError):
+            pass
+        # openai.RateLimitError has response attribute with headers
+        try:
+            ra = exc.response.headers.get("Retry-After")
+            if ra:
+                return int(ra)
+        except (ValueError, AttributeError, TypeError):
+            pass
+        return None
+
     def complete(
         self,
         system: str,
@@ -186,64 +274,124 @@ class _APIClient:
         temperature: float = 0.9,
         max_tokens: int = 1024,
     ) -> str:
-        """Single chat completion — returns assistant text."""
-        try:
-            if self.provider in (
-                "openai",
-                "together",
-                "openrouter",
-                "cerebras",
-                "groq",
-            ):
-                resp = self._client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                return resp.choices[0].message.content
+        """Single chat completion with 429-aware retry — returns assistant text."""
+        # ── Proactive rate limiting — check circuit breaker before sending ──
+        if self._rate_state is not None:
+            now = time.time()
+            can_send, wait = self._rate_state.can_send(now)
+            if not can_send and wait > 0:
+                logger.warning("Rate circuit open — sleeping %.1fs before send", wait)
+                time.sleep(wait)
 
-            elif self.provider == "anthropic":
-                resp = self._client.messages.create(
-                    model=self.model,
-                    max_tokens=max_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": user}],
-                    temperature=temperature,
-                )
-                return resp.content[0].text
+        max_429_attempts = 5
+        max_other_attempts = 3
+        base_backoff_429 = [8, 16, 30, 60, 120]  # seconds per attempt for 429
+        base_backoff_other = [2, 4, 8]            # seconds per attempt for other errors
 
-            elif self.provider == "google":
-                resp = self._client.generate_content(f"{system}\n\n{user}")
-                return resp.text
+        for attempt in range(1, max(max_429_attempts, max_other_attempts) + 1):
+            try:
+                if self.provider in (
+                    "openai",
+                    "together",
+                    "openrouter",
+                    "opencode",
+                    "cerebras",
+                    "groq",
+                ):
+                    resp = self._client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    # ── Track rate limit from response headers ──────────────
+                    if self._rate_state is not None:
+                        headers: dict[str, str] = {}
+                        try:
+                            if hasattr(resp, 'raw_response') and hasattr(resp.raw_response, 'headers'):
+                                headers = dict(resp.raw_response.headers)
+                            elif hasattr(resp, '_response') and hasattr(resp._response, 'headers'):
+                                headers = dict(resp._response.headers)
+                        except Exception:
+                            pass
+                        self._rate_state.record_success(headers)
+                    return resp.choices[0].message.content
 
-            elif self.provider == "mistral":
-                resp = self._client.chat.complete(
-                    model=self.model,
-                    messages=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                return resp.choices[0].message.content
+                elif self.provider == "anthropic":
+                    resp = self._client.messages.create(
+                        model=self.model,
+                        max_tokens=max_tokens,
+                        system=system,
+                        messages=[{"role": "user", "content": user}],
+                        temperature=temperature,
+                    )
+                    return resp.content[0].text
 
-            raise RuntimeError(f"Unreachable provider branch: {self.provider}")
+                elif self.provider == "google":
+                    resp = self._client.generate_content(f"{system}\n\n{user}")
+                    return resp.text
 
-        except Exception as exc:
-            logger.warning(
-                f"API error (provider={self.provider}, model={self.model}): "
-                f"{type(exc).__name__}: {exc}"
-            )
-            if hasattr(exc, "status_code"):
-                logger.warning(f"HTTP status: {exc.status_code}")
-            if hasattr(exc, "body"):
-                logger.warning(f"Error body: {exc.body}")
-            raise
+                elif self.provider == "mistral":
+                    resp = self._client.chat.complete(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": system},
+                            {"role": "user", "content": user},
+                        ],
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                    )
+                    return resp.choices[0].message.content
+
+                raise RuntimeError(f"Unreachable provider branch: {self.provider}")
+
+            except Exception as exc:
+                is_429 = self._is_rate_limit(exc)
+                status = getattr(exc, "status_code", "?") if hasattr(exc, "status_code") else "?"
+                err_name = type(exc).__name__
+
+                # ── Track 429 in rate state (circuit breaker) ──────────────
+                if is_429 and self._rate_state is not None:
+                    retry_after = self._get_retry_after(exc)
+                    self._rate_state.record_429(retry_after)
+
+                if is_429:
+                    if attempt >= max_429_attempts:
+                        logger.error(
+                            f"Rate limit persisted after {max_429_attempts} attempts — giving up. "
+                            f"(provider={self.provider}, model={self.model})"
+                        )
+                        raise
+                    retry_after = self._get_retry_after(exc)
+                    wait = retry_after or base_backoff_429[attempt - 1]
+                    logger.warning(
+                        f"Rate limited (429) on attempt {attempt}/{max_429_attempts} "
+                        f"— waiting {wait}s... (provider={self.provider}, model={self.model})"
+                    )
+                else:
+                    if attempt >= max_other_attempts:
+                        logger.error(
+                            f"API error after {max_other_attempts} attempts — giving up. "
+                            f"({err_name}, provider={self.provider}, model={self.model})"
+                        )
+                        raise
+                    wait = base_backoff_other[attempt - 1]
+                    logger.warning(
+                        f"API error ({err_name}, status={status}) on attempt {attempt}/{max_other_attempts} "
+                        f"— retrying in {wait}s... (provider={self.provider}, model={self.model})"
+                    )
+                    if hasattr(exc, "body"):
+                        logger.warning(f"Error body: {exc.body}")
+
+                time.sleep(wait)
+                # Add jitter: ±20% to avoid thundering herd
+                time.sleep(random.uniform(0, wait * 0.2))
+
+        # Should not reach here, but safety net
+        raise RuntimeError(f"Exhausted all retry attempts for {self.model}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -495,8 +643,8 @@ class TelcoDatasetGenerator:
         self,
         train_function_library: dict,
         test_function_library: dict,
-        provider: str = "openai",
-        model: str = "gpt-4o-mini",
+        provider: str = "opencode",
+        model: str = "deepseek-v4-flash-free",
         api_key: str | None = None,
         base_url: str | None = None,
         max_workers: int = 8,
@@ -505,9 +653,12 @@ class TelcoDatasetGenerator:
         max_tokens: int = 1024,
         seed: int = 42,
         argument_values_path: str | None = None,
+        checkpoint_dir: str | None = None,
+        retriever: FunctionRetriever | None = None,
     ):
         self.train_library = train_function_library
         self.test_library = test_function_library
+        self._retriever = retriever
         self.train_func_names = list(train_function_library.keys())
         self.test_func_names = list(test_function_library.keys())
         self.all_func_names = list(set(self.train_func_names + self.test_func_names))
@@ -555,7 +706,9 @@ class TelcoDatasetGenerator:
                 f"API key not found. Set the environment variable "
                 f"'{provider.upper()}_API_KEY' or pass api_key= explicitly."
             )
-        self.client = _APIClient(provider, model, _key, base_url)
+        self.checkpoint_dir = checkpoint_dir
+        self._rate_state = _RateState()
+        self.client = _APIClient(provider, model, _key, base_url, rate_state=self._rate_state)
         logger.info(
             f"Generator: {model} ({provider}) | "
             f"{len(self.train_func_names)} train + {len(self.test_func_names)} test funcs | "
@@ -601,14 +754,16 @@ class TelcoDatasetGenerator:
             train_schema_path=train_schema,
             test_schema_path=test_schema,
             argument_values_path=arg_values,
-            provider=dg.get("provider", "openai"),
-            model=dg.get("model", "gpt-4o-mini"),
-            api_key=os.getenv(dg.get("api_key_env", "OPENAI_API_KEY")),
+            provider=dg.get("provider", "opencode"),
+            model=dg.get("model", "deepseek-v4-flash-free"),
+            api_key=os.getenv(dg.get("api_key_env", "OPENCODE_API_KEY")),
+            base_url=dg.get("base_url") or "https://opencode.ai/zen/v1",
             base_url=dg.get("base_url"),
             max_workers=dg.get("max_workers", 8),
             requests_per_minute=dg.get("requests_per_minute", 500),
             temperature=dg.get("temperature", 0.9),
             max_tokens=dg.get("max_tokens", 1024),
+            checkpoint_dir=dg.get("checkpoint_dir"),
         )
 
     # ── public entry-point ────────────────────────────────────────────────────
@@ -619,6 +774,7 @@ class TelcoDatasetGenerator:
         output_dir: str = "data/generated/v1.0",
         workflow_distribution: dict | None = None,
         train_split: float = 0.89,
+        checkpoint_dir: str | None = None,
     ) -> tuple[list[DataSample], list[DataSample]]:
         """
         Main generation loop.
@@ -629,11 +785,15 @@ class TelcoDatasetGenerator:
         output_dir              : where to write .jsonl files
         workflow_distribution   : overrides default ratios
         train_split             : fraction of samples for training (within training functions)
+        checkpoint_dir          : directory for checkpoint files (resume from interruption)
 
         Returns
         ───────
         (train_samples, test_samples)
         """
+        if checkpoint_dir is None:
+            checkpoint_dir = self.checkpoint_dir
+
         logger.info(
             f"Starting dataset generation: total={total}, train_split={train_split}"
         )
@@ -668,6 +828,7 @@ class TelcoDatasetGenerator:
                 counts["single_call"],
                 "train",
                 self._generate_single_calls,
+                "single_call",
             ),
             (
                 "parallel (train)",
@@ -675,6 +836,7 @@ class TelcoDatasetGenerator:
                 counts["parallel"],
                 "train",
                 self._generate_parallel,
+                "parallel",
             ),
             (
                 "abstention (train)",
@@ -682,6 +844,7 @@ class TelcoDatasetGenerator:
                 counts["abstention"],
                 "train",
                 self._generate_abstentions,
+                "abstention",
             ),
             (
                 "single_call (test)",
@@ -689,6 +852,7 @@ class TelcoDatasetGenerator:
                 int(counts["single_call"] * test_split),
                 "test",
                 self._generate_single_calls,
+                "single_call",
             ),
             (
                 "parallel (test)",
@@ -696,6 +860,7 @@ class TelcoDatasetGenerator:
                 int(counts["parallel"] * test_split),
                 "test",
                 self._generate_parallel,
+                "parallel",
             ),
             (
                 "abstention (test)",
@@ -703,30 +868,39 @@ class TelcoDatasetGenerator:
                 int(counts["abstention"] * test_split),
                 "test",
                 self._generate_abstentions,
+                "abstention",
             ),
         ]
 
-        with tqdm(total=total, desc="Generating", unit="sample", leave=True) as pbar:
-            for label, funcs, n, split, gen_fn in stages:
-                samples = gen_fn(n, funcs, split=split, pbar=pbar)
-                if split == "train":
-                    train_samples.extend(samples)
-                else:
-                    test_samples.extend(samples)
+        try:
+            with tqdm(total=total, desc="Generating", unit="sample", leave=True) as pbar:
+                for label, funcs, n, split, gen_fn, workflow_type in stages:
+                    samples = gen_fn(n, funcs, split=split, pbar=pbar,
+                                     checkpoint_dir=checkpoint_dir, workflow_type=workflow_type)
+                    if split == "train":
+                        train_samples.extend(samples)
+                    else:
+                        test_samples.extend(samples)
 
-        # ── 5. Assign splits + simulate retrieved functions ──────────────────
-        random.shuffle(train_samples)
-        random.shuffle(test_samples)
+            # ── 5. Assign splits + simulate retrieved functions ──────────────────
+            random.shuffle(train_samples)
+            random.shuffle(test_samples)
 
-        for s in train_samples:
-            s.split = "train"
-        for s in test_samples:
-            s.split = "test"
+            for s in train_samples:
+                s.split = "train"
+            for s in test_samples:
+                s.split = "test"
 
-        self._simulate_retrieval(train_samples, k=5)
-        self._simulate_retrieval(test_samples, k=5)
+            self._simulate_retrieval(train_samples, k=5)
+            self._simulate_retrieval(test_samples, k=5)
 
-        # ── 7. Save ──────────────────────────────────────────────────────────
+        except KeyboardInterrupt:
+            logger.warning(
+                f"Generation interrupted. Saving partial results: "
+                f"train={len(train_samples)}, test={len(test_samples)}"
+            )
+
+        # ── 7. Save (always — even partial on interrupt) ────────────────────────
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
         train_path = out / "raw_train_dataset.jsonl"
@@ -748,6 +922,8 @@ class TelcoDatasetGenerator:
         split: str = "train",
         batch_size: int = 5,
         pbar: tqdm | None = None,
+        checkpoint_dir: str | None = None,
+        workflow_type: str = "single_call",
     ) -> list[DataSample]:
         """Generate single‑function‑call samples."""
         tasks: list[tuple[str, int]] = []
@@ -758,23 +934,55 @@ class TelcoDatasetGenerator:
             tasks.append((fn, n))
             remaining -= n
 
+        # ── Checkpoint: skip already‑completed tasks ──────────────────────
+        completed_keys = self._load_checkpoint(checkpoint_dir, workflow_type)
+        if completed_keys:
+            before = len(tasks)
+            tasks = [(fn, n) for (fn, n) in tasks
+                     if f"single_{fn}_{n}" not in completed_keys]
+            skipped = before - len(tasks)
+            if skipped:
+                logger.info(
+                    f"Checkpoint resume: skipping {skipped} already‑completed single_call tasks"
+                )
+
         samples: list[DataSample] = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        interrupted = False
+        new_since_checkpoint = 0
+        try:
             futures = {
                 pool.submit(self._call_single, fn, n): (fn, n) for fn, n in tasks
             }
             for fut in as_completed(futures):
-                fn, _ = futures[fut]
+                fn, n_task = futures[fut]
                 try:
                     raw_list = fut.result()
                     for raw in raw_list:
                         s = self._parse_sample(raw, "single_call", split)
                         if s:
                             samples.append(s)
+                            new_since_checkpoint += 1
                             if pbar is not None:
                                 pbar.update(1)
+                    # Periodic checkpoint every 50 new samples
+                    if checkpoint_dir and new_since_checkpoint >= 50:
+                        self._save_checkpoint(
+                            checkpoint_dir, workflow_type, f"single_{fn}_{n_task}", len(samples)
+                        )
+                        new_since_checkpoint = 0
                 except Exception as exc:
                     logger.warning(f"single_call error for '{fn}': {exc}")
+        except KeyboardInterrupt:
+            logger.warning("Ctrl+C caught in single_call — saving partial results...")
+            interrupted = True
+            raise
+        finally:
+            pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
+            if checkpoint_dir and tasks and not interrupted:
+                self._save_checkpoint(
+                    checkpoint_dir, workflow_type, "done", len(samples)
+                )
 
         self._rate_limit_wait(len(tasks))
         return samples
@@ -785,6 +993,8 @@ class TelcoDatasetGenerator:
         func_pool: list[str],
         split: str = "train",
         pbar: tqdm | None = None,
+        checkpoint_dir: str | None = None,
+        workflow_type: str = "parallel",
     ) -> list[DataSample]:
         """Generate parallel multi‑call samples."""
         tasks: list[tuple[list[str], int]] = []
@@ -796,22 +1006,54 @@ class TelcoDatasetGenerator:
             tasks.append((chosen, n))
             remaining -= n
 
+        # ── Checkpoint: skip already‑completed tasks ──────────────────────
+        completed_keys = self._load_checkpoint(checkpoint_dir, workflow_type)
+        if completed_keys:
+            before = len(tasks)
+            tasks = [(fns, n) for (fns, n) in tasks
+                     if f"parallel_{'_'.join(sorted(fns))}_{n}" not in completed_keys]
+            skipped = before - len(tasks)
+            if skipped:
+                logger.info(
+                    f"Checkpoint resume: skipping {skipped} already‑completed parallel tasks"
+                )
+
         samples: list[DataSample] = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        interrupted = False
+        new_since_checkpoint = 0
+        try:
             futures = {
-                pool.submit(self._call_parallel, fns, n): fns for fns, n in tasks
+                pool.submit(self._call_parallel, fns, n): (fns, n) for fns, n in tasks
             }
             for fut in as_completed(futures):
-                fns = futures[fut]
+                fns, n_task = futures[fut]
                 try:
                     for raw in fut.result():
                         s = self._parse_sample(raw, "parallel", split)
                         if s:
                             samples.append(s)
+                            new_since_checkpoint += 1
                             if pbar is not None:
                                 pbar.update(1)
+                    if checkpoint_dir and new_since_checkpoint >= 50:
+                        self._save_checkpoint(
+                            checkpoint_dir, workflow_type,
+                            f"parallel_{'_'.join(sorted(fns))}_{n_task}", len(samples)
+                        )
+                        new_since_checkpoint = 0
                 except Exception as exc:
                     logger.warning(f"parallel error: {exc}")
+        except KeyboardInterrupt:
+            logger.warning("Ctrl+C caught in parallel — saving partial results...")
+            interrupted = True
+            raise
+        finally:
+            pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
+            if checkpoint_dir and tasks and not interrupted:
+                self._save_checkpoint(
+                    checkpoint_dir, workflow_type, "done", len(samples)
+                )
 
         self._rate_limit_wait(len(tasks))
         return samples
@@ -822,6 +1064,8 @@ class TelcoDatasetGenerator:
         func_pool: list[str],
         split: str = "train",
         pbar: tqdm | None = None,
+        checkpoint_dir: str | None = None,
+        workflow_type: str = "abstention",
     ) -> list[DataSample]:
         """Generate refusal / abstention samples."""
         tasks: list[tuple[list[str], int]] = []
@@ -833,22 +1077,54 @@ class TelcoDatasetGenerator:
             tasks.append((chosen, n))
             remaining -= n
 
+        # ── Checkpoint: skip already‑completed tasks ──────────────────────
+        completed_keys = self._load_checkpoint(checkpoint_dir, workflow_type)
+        if completed_keys:
+            before = len(tasks)
+            tasks = [(fns, n) for (fns, n) in tasks
+                     if f"abstention_{'_'.join(sorted(fns))}_{n}" not in completed_keys]
+            skipped = before - len(tasks)
+            if skipped:
+                logger.info(
+                    f"Checkpoint resume: skipping {skipped} already‑completed abstention tasks"
+                )
+
         samples: list[DataSample] = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=self.max_workers)
+        interrupted = False
+        new_since_checkpoint = 0
+        try:
             futures = {
-                pool.submit(self._call_abstention, fns, n): fns for fns, n in tasks
+                pool.submit(self._call_abstention, fns, n): (fns, n) for fns, n in tasks
             }
             for fut in as_completed(futures):
-                fns = futures[fut]
+                fns, n_task = futures[fut]
                 try:
                     for raw in fut.result():
                         s = self._parse_sample(raw, "abstention", split)
                         if s:
                             samples.append(s)
+                            new_since_checkpoint += 1
                             if pbar is not None:
                                 pbar.update(1)
+                    if checkpoint_dir and new_since_checkpoint >= 50:
+                        self._save_checkpoint(
+                            checkpoint_dir, workflow_type,
+                            f"abstention_{'_'.join(sorted(fns))}_{n_task}", len(samples)
+                        )
+                        new_since_checkpoint = 0
                 except Exception as exc:
                     logger.warning(f"abstention error: {exc}")
+        except KeyboardInterrupt:
+            logger.warning("Ctrl+C caught in abstention — saving partial results...")
+            interrupted = True
+            raise
+        finally:
+            pool.shutdown(wait=not interrupted, cancel_futures=interrupted)
+            if checkpoint_dir and tasks and not interrupted:
+                self._save_checkpoint(
+                    checkpoint_dir, workflow_type, "done", len(samples)
+                )
 
         self._rate_limit_wait(len(tasks))
         return samples
@@ -1006,18 +1282,15 @@ class TelcoDatasetGenerator:
     # ── retrieval simulation ──────────────────────────────────────────────────
 
     def _simulate_retrieval(self, samples: list[DataSample], k: int = 5) -> None:
-        """Fill retrieved_functions with the ground‑truth function + distractors."""
+        """Fill retrieved_functions using the real FunctionRetriever."""
+        if self._retriever is None:
+            merged = {**self.train_library, **self.test_library}
+            self._retriever = FunctionRetriever(
+                merged, method="hybrid",
+                encoder_model="AITeamVN/Vietnamese_Embedding_v2",
+            )
         for s in samples:
-            calls = s.ground_truth.get("calls", [])
-            true_fn = calls[0]["function"] if calls else None
-            if true_fn:
-                distractors = [fn for fn in self.all_func_names if fn != true_fn]
-                chosen = random.sample(distractors, min(k - 1, len(distractors)))
-                pool = [true_fn] + chosen
-            else:
-                pool = []
-            random.shuffle(pool)
-            s.retrieved_functions = pool[:k]
+            s.retrieved_functions = self._retriever.retrieve(s.query, k=k)
 
     # ── argument value enrichment ─────────────────────────────────────────────
 
@@ -1109,6 +1382,49 @@ class TelcoDatasetGenerator:
             if min_interval > 0.5:
                 logger.debug(f"Rate‑limiting: sleeping {min_interval:.2f}s")
                 time.sleep(min_interval)
+
+    def _wait_if_circuit_open(self) -> None:
+        """Block if the circuit breaker is open or rate limit is low."""
+        now = time.time()
+        can_send, wait = self._rate_state.can_send(now)
+        if not can_send and wait > 0:
+            logger.warning("Rate circuit open — sleeping %.1fs", wait)
+            time.sleep(wait)
+
+    @staticmethod
+    def _load_checkpoint(checkpoint_dir: str | None, workflow_type: str) -> set[str]:
+        """Load completed task keys from checkpoint file."""
+        if not checkpoint_dir:
+            return set()
+        ckpt_path = Path(checkpoint_dir) / f"checkpoint_{workflow_type}.jsonl"
+        if not ckpt_path.exists():
+            return set()
+        completed: set[str] = set()
+        try:
+            with open(ckpt_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        data = json.loads(line)
+                        completed.add(data["task_key"])
+            logger.info(f"Loaded checkpoint: {len(completed)} completed tasks from {ckpt_path}")
+        except Exception as exc:
+            logger.warning(f"Error loading checkpoint {ckpt_path}: {exc}")
+        return completed
+
+    @staticmethod
+    def _save_checkpoint(checkpoint_dir: str | None, workflow_type: str, task_key: str, sample_count: int) -> None:
+        """Save a task completion to checkpoint file."""
+        if not checkpoint_dir:
+            return
+        ckpt_dir = Path(checkpoint_dir)
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        ckpt_path = ckpt_dir / f"checkpoint_{workflow_type}.jsonl"
+        try:
+            with open(ckpt_path, "a") as f:
+                f.write(json.dumps({"task_key": task_key, "sample_count": sample_count}) + "\n")
+        except Exception as exc:
+            logger.warning(f"Error saving checkpoint {ckpt_path}: {exc}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
