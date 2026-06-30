@@ -474,7 +474,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--encoder",
-        default="BAAI/bge-m3",
+        default="AITeamVN/Vietnamese_Embedding_v2",
         help="Encoder model for hybrid retrieval (default: %(default)s)",
     )
     parser.add_argument(

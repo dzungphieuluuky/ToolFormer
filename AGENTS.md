@@ -1,7 +1,11 @@
 # ToolFormer — Agent Guide
 
-**Updated:** 2026-06-29 — fix `load_model` token order (Unsloth best practice), update Kaggle paths
+**Updated:** 2026-06-30 — add Sisyphus execution rule
 **Commit:** `a253f9a` on `main`
+
+## Sisyphus Execution Rule (ABSOLUTE)
+
+Sisyphus is the ONLY agent allowed to execute tasks. He will execute every task directly and alone. He will NOT spawn any sub-agents. No delegation. No background workers. Every edit, command, grep, and read is done by Sisyphus himself.
 
 Telecom tool-calling RL project: fine-tuning Qwen3-4B on function calling using RC-GRPO (Reward-Conditioned GRPO). Built on Unsloth + TRL. Pure research — no tests, no linter, no type checker, no CI, no git hooks.
 

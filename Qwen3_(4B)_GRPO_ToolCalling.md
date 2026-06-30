@@ -1178,7 +1178,7 @@ class FunctionRetriever:
     but significant latency.
 
     If you need embeddings, pass method="hybrid" and an encoder_model
-    that handles Vietnamese (e.g., "codefuse-ai/F2LLM-v2-0.6B").
+    that handles Vietnamese (e.g., "AITeamVN/Vietnamese_Embedding_v2").
     """
 
     def __init__(
@@ -3512,7 +3512,7 @@ if Path(test_dataset_path).exists():
         seen_functions = None
 
     retriever = FunctionRetriever(function_library, method="hybrid",
-                                   encoder_model="codefuse-ai/F2LLM-v2-0.6B")
+                                   encoder_model="AITeamVN/Vietnamese_Embedding_v2")
     sandbox = Sandbox(function_library)
 
     eval_result = evaluate_model(
