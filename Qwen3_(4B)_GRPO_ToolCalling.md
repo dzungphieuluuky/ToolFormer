@@ -103,7 +103,7 @@ print(f"Base model: {BASE_MODEL_NAME}")
 
 ```python
 # ── Install packages ────────────────────────────────────────────────
-os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # Disable vLLM standby mode for training SFT (default, overridden per mode)
+os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # vLLM standby OFF globally (all modes, including GRPO)
 
 if ENV_NAME == "colab":
     print("Installing packages for colab env...")
@@ -3149,11 +3149,11 @@ TRAIN_CONFIG = {
             "UNSLOTH_VLLM_STANDBY": "0",
         },
         "grpo": {
-            "UNSLOTH_VLLM_STANDBY": "1",
+            "UNSLOTH_VLLM_STANDBY": "0",
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
         },
         "rc_grpo": {
-            "UNSLOTH_VLLM_STANDBY": "1",
+            "UNSLOTH_VLLM_STANDBY": "0",
             "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:False",
         },
         "eval": {
@@ -3456,7 +3456,7 @@ if MODE == "rctp_ft":
 ```python
 if MODE in ("grpo", "rc_grpo"):
     # ===================== STAGE 2: RC-GRPO (or vanilla GRPO baseline) =====================
-    apply_env_overrides(TRAIN_CONFIG, MODE)  # sets UNSLOTH_VLLM_STANDBY=1, expandable_segments:False
+    apply_env_overrides(TRAIN_CONFIG, MODE)  # sets UNSLOTH_VLLM_STANDBY=0, expandable_segments:False
     print("\n" + "=" * 70)
     print(f"STAGE 2: {'RC-GRPO' if MODE == 'rc_grpo' else 'Vanilla GRPO baseline'}")
     print("=" * 70)
