@@ -94,7 +94,7 @@ print(f"IS_T4_GPU: {IS_T4_GPU}")
 
 ```python
 # ── Install packages ────────────────────────────────────────────────
-    os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # Disable vLLM standby mode for training SFT (default, overridden per mode)
+os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # Disable vLLM standby mode for training SFT (default, overridden per mode)
 
 if ENV_NAME == "colab":
     print("Installing packages for colab env...")
@@ -3023,7 +3023,7 @@ TRAIN_CONFIG = {
         "per_device_train_batch_size": 2,
         "gradient_accumulation_steps": 4,
         "num_generations": 5,         # Table 10: Group Size G = 5
-        "max_steps": 10,             # reduce for quick test; increase for full run
+        "max_steps": 500,             # reduce for quick test; increase for full run
         "save_steps": 50,
         "logging_steps": 1,
         "max_grad_norm": 1.0,
