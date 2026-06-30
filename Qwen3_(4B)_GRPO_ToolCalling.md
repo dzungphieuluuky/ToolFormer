@@ -3303,7 +3303,7 @@ if MODE == "sft":
 ```
 
 ```python
-if MODE == "sft:
+if MODE == "sft":
     !zip -r sft_model.zip outputs/sft_model
     from IPython.display import FileLink
     FileLink("sft_model.zip")
