@@ -147,9 +147,9 @@ def main() -> None:
                 retriever=func_retriever,
             )
 
-            logger.info("Generating 3000 samples...")
+            logger.info("Generating 3500 samples...")
             train_samples, test_samples = generator.generate(
-                total=3000,
+                total=3500,
                 train_split=1.0,
             )
             logger.info("Generated %d train samples (test: %d)",
