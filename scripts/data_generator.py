@@ -758,7 +758,6 @@ class TelcoDatasetGenerator:
             model=dg.get("model", "deepseek-v4-flash-free"),
             api_key=os.getenv(dg.get("api_key_env", "OPENCODE_API_KEY")),
             base_url=dg.get("base_url") or "https://opencode.ai/zen/v1",
-            base_url=dg.get("base_url"),
             max_workers=dg.get("max_workers", 8),
             requests_per_minute=dg.get("requests_per_minute", 500),
             temperature=dg.get("temperature", 0.9),
