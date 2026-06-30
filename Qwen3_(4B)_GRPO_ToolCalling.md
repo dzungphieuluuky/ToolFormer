@@ -180,7 +180,7 @@ else:
 
 # Kaggle: install pre-downloaded torch + flash-attn + einops (Blackwell wheels)
 if ENV_NAME == "kaggle":
-    !pip install --no-index --find-links=/kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/ \"/kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/flash_attn-2.8.3+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl\"
+    !pip install --no-index --find-links=/kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/ /kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/flash_attn-2.8.3+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
 
 ```
 
@@ -3222,9 +3222,10 @@ if MODE == "sft":
 ```
 
 ```python
-!zip -r outputs/sft_model.zip outputs/sft_model
-from IPython.display import FileLink
-FileLink("outputs/sft_model.zip")
+if MODE == "sft:
+    !zip -r sft_model.zip outputs/sft_model
+    from IPython.display import FileLink
+    FileLink("sft_model.zip")
 ```
 
 ```python
@@ -3316,7 +3317,7 @@ if MODE == "rctp_ft":
         warmup_ratio=0.1,
         logging_steps=5,
         save_strategy="epoch",
-        save_total_limit=2,
+        save_total_limit=1,
         report_to="none",
         remove_unused_columns=True,
         fp16=not torch.cuda.is_bf16_supported(),
@@ -3356,9 +3357,10 @@ if MODE == "rctp_ft":
 ```
 
 ```python
-!zip -r outputs/rctp_ft_model.zip outputs/rctp_ft_model
-from IPython.display import FileLink
-FileLink("outputs/rctp_ft_model.zip")
+if MODE == "rctp_ft":
+    !zip -r rctp_ft_model.zip outputs/rctp_ft_model
+    from IPython.display import FileLink
+    FileLink("rctp_ft_model.zip")
 ```
 
 ```python
@@ -3457,9 +3459,9 @@ if MODE in ("grpo", "rc_grpo"):
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
     print(f"Model saved to {output_dir}")
-    !zip -r {output_dir}.zip {output_dir}
+    !zip -r {output_dir.split("/")[-1]}.zip {output_dir}
     from IPython.display import FileLink
-    FileLink(f"{output_dir}.zip")
+    FileLink(f"{output_dir.split("/")[-1]}.zip")
 else:
     print(f"Skipping Stage 2 (MODE={MODE}).")
 
@@ -3578,9 +3580,6 @@ if Path(test_dataset_path).exists():
             print(tabulate(cat_rows, headers=["Metric", "Value"], tablefmt="grid"))
 
     generate_report([eval_result])
-    !zip -r {MODE_OUTPUT_DIR}.zip {MODE_OUTPUT_DIR}
-    from IPython.display import FileLink
-    FileLink(f"{MODE_OUTPUT_DIR}.zip")
 else:
     print("Test dataset not found; skipping evaluation.")
 
