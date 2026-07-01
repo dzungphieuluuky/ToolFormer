@@ -10,6 +10,9 @@ Sisyphus is the ONLY agent allowed to execute tasks. He will execute every task 
 ### Best-Practice-First Rule (ABSOLUTE)
 Before implementing ANY mechanism, function, or utility from a request, ALWAYS search the internet (web search + official docs) for best practices and methods that would yield the highest performance with the lowest failure rate. Do not default to naive implementations when proven patterns exist. Reference specific sources in your approach.
 
+### Research-Before-Design Rule (ABSOLUTE)
+For any ablation study, hyperparameter design, training configuration change, or algorithmic modification, the first action MUST be a web search for peer-reviewed papers, official documentation, and community benchmarks that inform the design. No code or configuration is written until research findings are synthesized and cited. This ensures all design decisions are grounded in established results (e.g., DAPO, GTPO, FG-ExPO, TRL docs) rather than guesswork.
+
 ## Project Overview
 
 Telecom tool-calling RL project: fine-tuning Qwen3-4B for Vietnamese telecom function calling using RC-GRPO (Reward-Conditioned GRPO). Built on Unsloth + TRL. Pure research — **no tests, no linter, no type checker, no CI, no git hooks.**

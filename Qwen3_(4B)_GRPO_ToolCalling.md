@@ -2215,6 +2215,65 @@ class RCGRPOTrainer(GRPOTrainer):
         return super()._generate_and_score_completions(conditioned_inputs)
 
 
+class FGExPOGRPOTrainer(GRPOTrainer):
+    """GRPOTrainer with Accuracy-Conditioned KL Scaling (FG-ExPO, arXiv 2605.11403).
+
+    Replaces the fixed KL coefficient β with a dynamic β_eff that depends on
+    the batch's mean accuracy:
+
+        β_eff = β_base × (1 - mean_batch_accuracy)²
+
+    When accuracy is low (model failing), β_eff ≈ 0 → no KL constraint → free
+    exploration.  When accuracy is high (model succeeding), β_eff → β_base →
+    full regularization to preserve stability.
+
+    Reference: FG-ExPO Section 3.2 (AKL component), Eq. 4:
+        ρ(acc) = (1 - acc)²
+        β_eff = β_base × ρ(mean_batch_acc)
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Updated after each scoring step with the mean batch accuracy.
+        self._last_batch_accuracy: float = 0.5
+
+    def _generate_and_score_completions(self, inputs):
+        """Override to capture batch accuracy from the computed rewards."""
+        # Delegate to parent — this returns the standard output dict with
+        # rewards, completion_mask, advantages, etc.
+        result = super()._generate_and_score_completions(inputs)
+
+        # Compute batch mean accuracy from the raw reward scores.
+        # The first reward function is always function_reward (binary per
+        # completion).  Take the mean across the batch as our accuracy proxy.
+        if "rewards" in result and result["rewards"].numel() > 0:
+            # rewards shape: (batch_size, num_reward_funcs)
+            # function_reward is index 0 → binary {0, 1}.
+            func_rewards = result["rewards"][:, 0]
+            mean_acc = func_rewards.mean().item()
+            self._last_batch_accuracy = mean_acc
+
+        return result
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        """Scale β by (1 - mean_batch_accuracy)² before calling parent loss.
+
+        Because the KL penalty is added inside the parent's loss computation
+        as ``per_token_loss = per_token_loss + self.beta * per_token_kl``,
+        temporarily mutating ``self.beta`` is the simplest intervention point
+        that affects the loss without reimplementing the full GRPO loss.
+        """
+        original_beta = self.beta
+        try:
+            # FG-ExPO Eq. 4: β_eff = β_base × (1 - acc)²
+            acc = self._last_batch_accuracy
+            scale = (1.0 - acc) ** 2
+            self.beta = original_beta * scale
+            return super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
+        finally:
+            self.beta = original_beta
+
+
 def rc_grpo_reward_func(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
     """
     R(tau) = R_state * R_action (Eq. 5), binary in {0, 1}.
@@ -3119,7 +3178,7 @@ MODE = "grpo"  # one of: "sft", "grpo", "rc_grpo", "rctp_ft"
 assert MODE in ("sft", "grpo", "rc_grpo", "rctp_ft"), \
     f"Unknown MODE: {MODE}. Choose from: sft, grpo, rc_grpo, rctp_ft"
 EVAL_USE_VLLM = True  # Use vLLM batch eval for ~10x speedup
-
+os.environ["KL_COEFFICIENT"] = "0"
 DATA_DIR = Path(DATA_MOUNT)
 # Kaggle: /kaggle/input/ is read-only — skip mkdir, data is pre-mounted
 if ENV_NAME != "kaggle":
@@ -3127,7 +3186,6 @@ if ENV_NAME != "kaggle":
 
 FUNCTION_LIBRARY_PATH = DATA_DIR / "function_library.json"
 ARGUMENT_VALUES_PATH = DATA_DIR / "argument_values.json"  # optional
-
 
 TRAIN_CONFIG = {
     "model": {
@@ -3146,7 +3204,7 @@ TRAIN_CONFIG = {
         "use_gradient_checkpointing": "unsloth",
     },
     "training": {
-        "output_dir": f"outputs/{MODE}_model",
+        "output_dir": f"outputs/{MODE}_model{'_' + os.environ.get('KL_COEFFICIENT', 'default') if os.environ.get('KL_COEFFICIENT') else ''}",
         # Table 10 (RC-GRPO RL stage hyperparameters)
         "learning_rate": 5e-6,
         "adam_beta1": 0.9,
@@ -3179,7 +3237,15 @@ TRAIN_CONFIG = {
     "grpo": {
         "temperature": 1.0,
         "epsilon": 0.2,            # Table 10: symmetric Clip Ratio = 0.2
-        "kl_coefficient": 0.1,     # Table 10: KL Coefficient beta = 0.1
+        "kl_coefficient": float(os.environ.get("KL_COEFFICIENT", "0.1")),
+                                   # Override via env var.  Set "0.0" for
+                                   # reference-free (DAPO-style), "0.001" for
+                                   # minimal, "0.01" for moderate.  Can also
+                                   # be changed at runtime via TRAIN_CONFIG.
+        "adaptive_beta": os.environ.get("KL_COEFFICIENT", "").lower() == "adaptive",
+                                   # If set, FGExPO-style accuracy-conditioned
+                                   # KL scaling: β_eff = β_base × (1 - acc)².
+                                   # Use via: KL_COEFFICIENT=adaptive
         "loss_type": "grpo",
         "mask_truncated_completions": True,
     },
@@ -3515,7 +3581,13 @@ if MODE in ("grpo", "rc_grpo"):
     grpo_args = build_grpo_config(TRAIN_CONFIG, output_dir=TRAIN_CONFIG["training"]["output_dir"])
 
     if MODE == "rc_grpo":
-        trainer = RCGRPOTrainer(
+        adaptive_beta = TRAIN_CONFIG["grpo"].get("adaptive_beta", False)
+        _rc_cls = type(
+            "FGExPORCGRPOTrainer",
+            (FGExPOGRPOTrainer, RCGRPOTrainer),
+            {"__doc__": RCGRPOTrainer.__doc__},
+        ) if adaptive_beta else RCGRPOTrainer
+        trainer = _rc_cls(
             model=model,
             processing_class=tokenizer,
             reward_funcs=build_trl_reward_functions("rc_grpo"),
@@ -3523,14 +3595,22 @@ if MODE in ("grpo", "rc_grpo"):
             train_dataset=dataset,
             high_reward_probability=high_reward_probability,  # from Stage 1 stats, Eq. 3
         )
+        if adaptive_beta:
+            print(f"  FG-ExPO adaptive β enabled (RC-GRPO, base β = {grpo_args.beta})")
     elif MODE == "grpo":
-        trainer = GRPOTrainer(
+        # If adaptive beta is enabled (KL_COEFFICIENT=adaptive),
+        # use FG-ExPO-style accuracy-conditioned KL scaling.
+        adaptive_beta = TRAIN_CONFIG["grpo"].get("adaptive_beta", False)
+        _trainer_cls = FGExPOGRPOTrainer if adaptive_beta else GRPOTrainer
+        trainer = _trainer_cls(
             model=model,
             processing_class=tokenizer,
             reward_funcs=build_trl_reward_functions("grpo"),
             args=grpo_args,
             train_dataset=dataset,
         )
+        if adaptive_beta:
+            print(f"  FG-ExPO adaptive β enabled (base β = {grpo_args.beta})")
 
     print(f"Trainer initialized for {MODE}")
     print("=== GRPO dataset sample ===")
