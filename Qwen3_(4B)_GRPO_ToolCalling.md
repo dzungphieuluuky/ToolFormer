@@ -95,9 +95,9 @@ print(f"IS_T4_GPU: {IS_T4_GPU}")
 ```python
 # ── Base model path (auto-detects Kaggle path) ────────────────────────
 if ENV_NAME == "kaggle":
-    BASE_MODEL_NAME = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
+    BASE_MODEL_PATH = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
 else:
-    BASE_MODEL_NAME = "unsloth/Qwen3-4B-Instruct-2507"
+    BASE_MODEL_PATH = "unsloth/Qwen3-4B-Instruct-2507"
 print(f"Base model: {BASE_MODEL_NAME}")
 ```
 
@@ -2949,7 +2949,7 @@ def build_messages_for_grpo(
 
 
 def load_model(
-    base_model_name: str = "unsloth/Qwen3-4B-Instruct-2507",
+    base_model_path: str = "unsloth/Qwen3-4B-Instruct-2507",
     max_seq_length: int = 8192,
     load_in_4bit: bool = True,
     fast_inference: bool = False,
@@ -2978,7 +2978,7 @@ def load_model(
       5. Enable inference mode if mode == "inference"
 
     Args:
-        base_model_name: Name or path of the original base model.
+        base_model_path: Name or path of the original base model.
         max_seq_length: Maximum sequence length.
         load_in_4bit: Whether to quantize to 4-bit.
         fast_inference: Enable vLLM fast inference (required for GRPO).
@@ -2997,35 +2997,35 @@ def load_model(
     from unsloth import FastLanguageModel
 
     # ── 0. Kaggle path override ───────────────────────────────────────
-    if env_name == "kaggle" and base_model_name == "unsloth/Qwen3-4B-Instruct-2507":
-        base_model_name = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
+    if env_name == "kaggle" and base_model_path == "unsloth/Qwen3-4B-Instruct-2507":
+        base_model_path = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
 
     # ── 0.5 Adapter guard ─────────────────────────────────────────────
-    if os.path.isdir(base_model_name) and os.path.exists(
-        os.path.join(base_model_name, "adapter_config.json")
+    if os.path.isdir(base_model_path) and os.path.exists(
+        os.path.join(base_model_path, "adapter_config.json")
     ):
         raise ValueError(
-            f"The path '{base_model_name}' appears to be a LoRA adapter "
+            f"The path '{base_model_path}' appears to be a LoRA adapter "
             "(contains adapter_config.json), not a base model. "
-            "Set `adapter_model_path=` to this path and `base_model_name=` "
+            "Set `adapter_model_path=` to this path and `base_model_path=` "
             "to the original base model (e.g. 'unsloth/Qwen3-4B-Instruct-2507')."
         )
 
     # ── 0.6 Log resolved paths ─────────────────────────────────────────
     if adapter_model_path is not None:
-        print(f"[load_model] base_model_name={base_model_name}, adapter_model_path={adapter_model_path}")
+        print(f"[load_model] base_model_path={base_model_path}, adapter_model_path={adapter_model_path}")
     else:
-        print(f"[load_model] base_model_name={base_model_name}")
+        print(f"[load_model] base_model_path={base_model_path}")
 
     # ── 1. Load tokenizer from checkpoint or base model ───────────────
     if adapter_model_path is not None:
         tokenizer = AutoTokenizer.from_pretrained(adapter_model_path)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+        tokenizer = AutoTokenizer.from_pretrained(base_model_path)
 
     # ── 2. Load the base model (fast_inference handles internal GRPO patching) ─
     kwargs = dict(
-        model_name=base_model_name,
+        model_name=base_model_path,
         max_seq_length=max_seq_length,
         load_in_4bit=load_in_4bit,
         fast_inference=fast_inference,
@@ -3353,7 +3353,7 @@ def estimate_cost(prompt: str, response: str, price_per_1k_tokens: float = 0.000
     return (tokens_est / 1000) * price_per_1k_tokens
 
 def evaluate_model(
-    model_path: str,
+    adapter_model_path: str,
     test_dataset_path: str,
     function_library: dict,
     retriever: FunctionRetriever,
@@ -3367,7 +3367,7 @@ def evaluate_model(
     use_vllm: bool = True,
     batch_size: int = 32,
     gpu_memory_utilization: float | None = None,
-    base_model_name: str | None = None,
+    base_model_path: str | None = None,
 ) -> dict:
     """
     Unified evaluation: batched vLLM when use_vllm=True (default, ~10x faster),
@@ -3378,19 +3378,19 @@ def evaluate_model(
     """
     logger = get_logger(__name__)
     tag = "vLLM-Bench" if use_vllm else "Benchmark"
-    logger.info(f"[{tag}] Loading model from {model_path}")
+    logger.info(f"[{tag}] Loading model from {adapter_model_path}")
 
     # Resolve gpu_memory_utilization: explicit arg > config default > 0.8 fallback
     if gpu_memory_utilization is None:
         gpu_memory_utilization = TRAIN_CONFIG["model"]["gpu_memory_utilization"]
 
-    # Resolve base_model_name: explicit arg > TRAIN_CONFIG default
-    if base_model_name is None:
-        base_model_name = TRAIN_CONFIG["model"]["name"]
+    # Resolve base_model_path: explicit arg > TRAIN_CONFIG default
+    if base_model_path is None:
+        base_model_path = TRAIN_CONFIG["model"]["base_model_path"]
 
     model, tokenizer = load_model(
-        base_model_name=base_model_name,
-        adapter_model_path=model_path,
+        base_model_path=base_model_path,
+        adapter_model_path=adapter_model_path,
         mode="inference",
         fast_inference=True,
         gpu_memory_utilization=gpu_memory_utilization,
@@ -3610,7 +3610,7 @@ ARGUMENT_VALUES_PATH = DATA_DIR / "argument_values.json"  # optional
 
 TRAIN_CONFIG = {
     "model": {
-        "name": "unsloth/Qwen3-4B-Instruct-2507",
+        "base_model_path": "unsloth/Qwen3-4B-Instruct-2507",
         "max_seq_length": 8192,
         "load_in_4bit": True,
         "fast_inference": False,
@@ -3735,7 +3735,7 @@ if MODE == "sft":
     print("SFT: Supervised Fine-Tuning on expert demonstrations")
     print("=" * 70)
     model, tokenizer = load_model(
-        base_model_name=TRAIN_CONFIG["model"]["name"],
+        base_model_path=TRAIN_CONFIG["model"]["base_model_path"],
         max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
         load_in_4bit=TRAIN_CONFIG["model"]["load_in_4bit"],
         fast_inference=False,
@@ -3812,7 +3812,7 @@ if MODE == "sft":
         ["Mode", "SFT - Supervised Fine-Tuning"],
         ["Dataset", TRAIN_CONFIG["data"]["sft_path"]],
         ["Samples", len(dataset)],
-        ["Base model", TRAIN_CONFIG["model"]["name"]],
+        ["Base model", TRAIN_CONFIG["model"]["base_model_path"]],
         ["Max seq length", TRAIN_CONFIG["model"]["max_seq_length"]],
         ["Load in 4bit", TRAIN_CONFIG["model"]["load_in_4bit"]],
         ["Full finetuning", TRAIN_CONFIG["model"]["full_finetuning"]],
@@ -3853,7 +3853,7 @@ if MODE == "sft":
             "samples": len(dataset),
         },
         "model": {
-            "base_model": TRAIN_CONFIG["model"]["name"],
+            "base_model": TRAIN_CONFIG["model"]["base_model_path"],
             "max_seq_length": TRAIN_CONFIG["model"]["max_seq_length"],
             "load_in_4bit": TRAIN_CONFIG["model"]["load_in_4bit"],
             "full_finetuning": TRAIN_CONFIG["model"]["full_finetuning"],
@@ -3907,7 +3907,7 @@ if MODE == "rctp_ft":
     print("STAGE 1: Reward-Conditioned Trajectory Policy (RCTP) Fine-tuning")
     print("=" * 70)
     model, tokenizer = load_model(
-        base_model_name=TRAIN_CONFIG["model"]["name"],
+        base_model_path=TRAIN_CONFIG["model"]["base_model_path"],
         max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
         load_in_4bit=TRAIN_CONFIG["model"]["load_in_4bit"],
         fast_inference=False,
@@ -4031,7 +4031,7 @@ if MODE == "rctp_ft":
         ["Dataset", TRAIN_CONFIG["data"]["rctp_path"]],
         ["Trajectories", len(rctp_trajectories)],
         ["High reward probability", high_reward_probability],
-        ["Base model", TRAIN_CONFIG["model"]["name"]],
+        ["Base model", TRAIN_CONFIG["model"]["base_model_path"]],
         ["Max seq length", TRAIN_CONFIG["model"]["max_seq_length"]],
         ["Load in 4bit", TRAIN_CONFIG["model"]["load_in_4bit"]],
         ["LoRA rank (r)", TRAIN_CONFIG["lora"]["r"]],
@@ -4072,7 +4072,7 @@ if MODE == "rctp_ft":
             "high_reward_probability": high_reward_probability,
         },
         "model": {
-            "base_model": TRAIN_CONFIG["model"]["name"],
+            "base_model": TRAIN_CONFIG["model"]["base_model_path"],
             "max_seq_length": TRAIN_CONFIG["model"]["max_seq_length"],
             "load_in_4bit": TRAIN_CONFIG["model"]["load_in_4bit"],
         },
@@ -4144,7 +4144,7 @@ if MODE in ("grpo", "rc_grpo"):
     print(f"[Stage 2] Loading adapter_model_path = {adapter_model_path}")
 
     model, tokenizer = load_model(
-        base_model_name=base_model_path,
+        base_model_path=base_model_path,
         adapter_model_path=adapter_model_path,
         mode="train",          # keep in train mode for further fine-tuning
         fast_inference=True,
@@ -4224,7 +4224,7 @@ if MODE in ("grpo", "rc_grpo"):
         ["Samples", len(dataset)],
         ["Base model", base_model_path],
         ["Adapter model", adapter_model_path],
-        ["Base model name", TRAIN_CONFIG["model"]["name"]],
+        ["Base model name", TRAIN_CONFIG["model"]["base_model_path"]],
         ["Max seq length", TRAIN_CONFIG["model"]["max_seq_length"]],
         ["Load in 4bit", TRAIN_CONFIG["model"]["load_in_4bit"]],
         ["GPU memory util (Unsloth)", TRAIN_CONFIG["model"]["gpu_memory_utilization"]],
@@ -4281,7 +4281,7 @@ if MODE in ("grpo", "rc_grpo"):
             "samples": len(dataset),
         },
         "model": {
-            "base_model": TRAIN_CONFIG["model"]["name"],
+            "base_model": TRAIN_CONFIG["model"]["base_model_path"],
             "base_model_path": base_model_path,
             "adapter_model_path": adapter_model_path,
             "max_seq_length": TRAIN_CONFIG["model"]["max_seq_length"],
@@ -4399,7 +4399,7 @@ if Path(test_dataset_path).exists():
     sandbox = Sandbox(function_library)
 
     eval_result = evaluate_model(
-        model_path=MODE_OUTPUT_DIR,
+        adapter_model_path=MODE_OUTPUT_DIR,
         test_dataset_path=test_dataset_path,
         function_library=function_library,
         retriever=retriever,
