@@ -27,7 +27,7 @@ Standalone CLI data pipeline tools for the ToolFormer project (generation, enric
 | `prepare_data.py` | 427 | **Main orchestrator** — calls all other scripts |
 | `vietnamese_normalizer.py` | 106 | Vietnamese text normalization for retrieval |
 | `rerank_functions.py` | 148 | Cross-encoder reranking of retrieved functions |
-| `verify_token_counts.py` | 97 | Verify dataset token counts against model limits |
+| `verify_token_counts.py` | 599 | Verify dataset token counts against model limits (all formats) |
 
 ## Running
 

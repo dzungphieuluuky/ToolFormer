@@ -297,6 +297,9 @@ def check_function_name(sample: dict, function_library: dict) -> list[str]:
 def check_retrieved_functions(sample: dict, function_library: dict) -> list[str]:
     """Check that retrieved functions exist and are valid.
 
+    Abstention samples legitimately have empty ``retrieved_functions`` (no
+    function can handle the query). The empty-list check is skipped for them.
+
     Args:
         sample: Dataset sample dict.
         function_library: Dict mapping function names to schemas.
@@ -309,7 +312,9 @@ def check_retrieved_functions(sample: dict, function_library: dict) -> list[str]
     if not isinstance(rf, list):
         return [f"retrieved_functions is not a list: {type(rf).__name__}"]
     if len(rf) == 0:
-        errs.append("retrieved_functions is empty")
+        # Abstention samples legitimately have no retrieved functions
+        if sample.get("workflow_type") != "abstention":
+            errs.append("retrieved_functions is empty")
     for fi, fname in enumerate(rf):
         if not isinstance(fname, str):
             errs.append(f"retrieved_functions[{fi}] is not a string")

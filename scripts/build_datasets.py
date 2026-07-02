@@ -20,6 +20,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -401,6 +402,7 @@ class Trajectory:
     prompt_messages: list[dict[str, str]]
     response_text: str
     reward: int
+    _source_id: str | None = None
     reward_token: str = field(init=False)
 
     def __post_init__(self):
@@ -438,6 +440,41 @@ def build_failure_response(failure_gt: dict) -> str:
         "Analyzing the query to determine the correct function and arguments.",
     )
     return f"<reasoning>\n{reasoning}\n</reasoning>\n{calls_str}"
+
+
+# ── Function extraction helper ────────────────────────────────────────
+
+
+def _extract_functions_from_text(text: str) -> list[str]:
+    """Extract unique function names from <tool_call> blocks in text.
+
+    Parses each <tool_call>...</tool_call> block as JSON and extracts the
+    ``function`` key. Handles ``null`` blocks (abstention/failure responses)
+    gracefully by skipping them.
+
+    Args:
+        text: The response or chat text containing tool call blocks.
+
+    Returns:
+        Deduplicated list of function name strings found in tool calls.
+    """
+    functions: list[str] = []
+    pattern = re.compile(r"<tool_call>\n(.*?)\n</tool_call>", re.DOTALL)
+    for match in pattern.finditer(text):
+        content = match.group(1).strip()
+        if not content or content == "null":
+            continue
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                func = parsed.get("function")
+                if func and isinstance(func, str):
+                    functions.append(func)
+        except json.JSONDecodeError:
+            continue
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    return [f for f in functions if not (f in seen or seen.add(f))]
 
 
 # ── I/O helpers ───────────────────────────────────────────────────────
@@ -519,7 +556,7 @@ def build_sft_dataset(
             query, retrieved, function_library, gt, arg_vals
         )
         text = apply_chat_template(messages, add_generation_prompt=False)
-        records.append({"text": text})
+        records.append({"text": text, "_source_id": sample.get("id")})
     return records
 
 
@@ -558,6 +595,7 @@ def build_grpo_dataset(
                 "ground_truth": json.dumps(gt, ensure_ascii=False),
                 "query": query,
                 "workflow_type": sample.get("workflow_type", "single_call"),
+                "_source_id": sample.get("id"),
             }
         )
     return records
@@ -611,6 +649,7 @@ def build_rctp_dataset(
                 prompt_messages=prompt_messages,
                 response_text=expert_response,
                 reward=1,
+                _source_id=sample.get("id"),
             )
         )
 
@@ -631,21 +670,73 @@ def build_rctp_dataset(
                             prompt_messages=prompt_messages,
                             response_text=failure_response,
                             reward=0,
+                            _source_id=matching[i].get("id"),
                         )
                     )
 
     return trajectories
 
 
+# ── Argument value check helper ───────────────────────────────────────
+
+
+def _check_retrieved_argument_values(
+    sample: dict,
+    argument_values: dict,
+    label: str,
+    idx: int,
+) -> list[str]:
+    """Check that retrieved argument value codes exist in the catalog.
+
+    Args:
+        sample: A dataset sample dict with an optional ``retrieved_argument_values`` key.
+        argument_values: Catalog dict mapping parameter names to lists of value dicts.
+        label: Dataset label for error messages (e.g. ``"sft"``).
+        idx: Sample index for error messages.
+
+    Returns:
+        List of error messages (empty if all codes are valid).
+    """
+    errs: list[str] = []
+    rav = sample.get("retrieved_argument_values")
+    if not rav or not isinstance(rav, dict):
+        return errs
+    for param_name, entries in rav.items():
+        if param_name not in argument_values:
+            continue  # Skip parameters not in catalog (e.g., dynamic date values)
+        if not isinstance(entries, list):
+            continue
+        catalog_entries = argument_values[param_name]
+        codes_in_catalog = {
+            e.get("code") for e in catalog_entries if isinstance(e, dict)
+        }
+        for j, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            code = entry.get("code")
+            if not code:
+                continue
+            if code not in codes_in_catalog:
+                errs.append(
+                    f"{label}[{idx}]: retrieved_argument_values.{param_name}[{j}].code={code!r} not in argument_values catalog"
+                )
+    return errs
+
+
 # ── Validation ────────────────────────────────────────────────────────
 
 
-def validate_sft(records: list[dict], expected_count: int) -> list[str]:
+def validate_sft(
+    records: list[dict],
+    expected_count: int,
+    function_library: dict | None = None,
+) -> list[str]:
     """Validate SFT dataset records.
 
     Args:
         records: List of SFT record dicts.
         expected_count: Expected number of records.
+        function_library: Optional dict to validate function names against.
 
     Returns:
         List of error messages (empty if valid).
@@ -658,15 +749,38 @@ def validate_sft(records: list[dict], expected_count: int) -> list[str]:
             errs.append(f"sft[{i}]: missing 'text' field")
         elif not isinstance(rec["text"], str) or not rec["text"]:
             errs.append(f"sft[{i}]: 'text' is empty or not a string")
+        elif rec.get("text"):
+            text = rec["text"]
+            if "<|im_start|>system\n" not in text:
+                errs.append(f"sft[{i}]: text missing <|im_start|>system marker")
+            if "<|im_start|>user\n" not in text:
+                errs.append(f"sft[{i}]: text missing <|im_start|>user marker")
+            if "<|im_start|>assistant\n" not in text:
+                errs.append(f"sft[{i}]: text missing <|im_start|>assistant marker")
+            if not text.strip().endswith("<|im_end|>"):
+                errs.append(f"sft[{i}]: text does not end with <|im_end|>")
+    if function_library:
+        for i, rec in enumerate(records):
+            funcs = _extract_functions_from_text(rec.get("text", ""))
+            for func in funcs:
+                if func not in function_library:
+                    errs.append(
+                        f"sft[{i}]: function {func!r} in text not found in function_library"
+                    )
     return errs
 
 
-def validate_grpo(records: list[dict], expected_count: int) -> list[str]:
+def validate_grpo(
+    records: list[dict],
+    expected_count: int,
+    function_library: dict | None = None,
+) -> list[str]:
     """Validate GRPO/RC-GRPO dataset records.
 
     Args:
         records: List of GRPO record dicts.
         expected_count: Expected number of records.
+        function_library: Optional dict to validate function names against.
 
     Returns:
         List of error messages (empty if valid).
@@ -690,15 +804,34 @@ def validate_grpo(records: list[dict], expected_count: int) -> list[str]:
                     errs.append(f"grpo[{i}]: ground_truth is not a dict after parse")
             except json.JSONDecodeError:
                 errs.append(f"grpo[{i}]: ground_truth is not valid JSON")
+    if function_library:
+        for i, rec in enumerate(records):
+            gt = rec.get("ground_truth", "")
+            if gt:
+                try:
+                    parsed = json.loads(gt)
+                    calls = parsed.get("calls", [])
+                    for func in (c.get("function") for c in calls if isinstance(c, dict)):
+                        if func and func not in function_library:
+                            errs.append(
+                                f"grpo[{i}]: function {func!r} in ground_truth not found in function_library"
+                            )
+                except (json.JSONDecodeError, TypeError):
+                    pass
     return errs
 
 
-def validate_rctp(records: list[Trajectory], min_count: int) -> list[str]:
+def validate_rctp(
+    records: list[Trajectory],
+    min_count: int,
+    function_library: dict | None = None,
+) -> list[str]:
     """Validate RCTP dataset trajectories.
 
     Args:
         records: List of Trajectory objects.
         min_count: Minimum expected number of records.
+        function_library: Optional dict to validate function names against.
 
     Returns:
         List of error messages (empty if valid).
@@ -727,6 +860,20 @@ def validate_rctp(records: list[Trajectory], min_count: int) -> list[str]:
             errs.append(f"rctp[{i}]: reward must be 0 or 1, got {t.reward}")
         if not t.response_text.startswith("<reasoning>"):
             errs.append(f"rctp[{i}]: response_text does not start with <reasoning>")
+        if "</reasoning>" not in t.response_text:
+            errs.append(f"rctp[{i}]: response_text missing closing </reasoning>")
+        if "<tool_call>" not in t.response_text or "</tool_call>" not in t.response_text:
+            errs.append(
+                f"rctp[{i}]: response_text missing <tool_call> block"
+            )
+    if function_library:
+        for i, t in enumerate(records):
+            funcs = _extract_functions_from_text(t.response_text)
+            for func in funcs:
+                if func not in function_library:
+                    errs.append(
+                        f"rctp[{i}]: function {func!r} in response_text not found in function_library"
+                    )
     return errs
 
 
@@ -810,10 +957,19 @@ def main() -> None:
 
     errs: list[str] = []
 
+    # ── 0. Validate gold input argument values ──────────────────────
+    logger.info("Validating argument value codes against catalog...")
+    for i, sample in enumerate(gold_samples):
+        errs.extend(
+            _check_retrieved_argument_values(sample, argument_values, "gold", i)
+        )
+    if errs:
+        logger.error("Found %d argument value validation errors", len(errs))
+
     # ── 1. SFT dataset ─────────────────────────────────────────────
     logger.info("Building SFT dataset...")
     sft_records = build_sft_dataset(gold_samples, function_library, argument_values)
-    sft_errs = validate_sft(sft_records, len(gold_samples))
+    sft_errs = validate_sft(sft_records, len(gold_samples), function_library)
     if sft_errs:
         errs.extend(f"sft: {e}" for e in sft_errs)
     else:
@@ -823,7 +979,7 @@ def main() -> None:
     # ── 2. GRPO dataset ────────────────────────────────────────────
     logger.info("Building GRPO dataset...")
     grpo_records = build_grpo_dataset(gold_samples, function_library, argument_values)
-    grpo_errs = validate_grpo(grpo_records, len(gold_samples))
+    grpo_errs = validate_grpo(grpo_records, len(gold_samples), function_library)
     if grpo_errs:
         errs.extend(f"grpo: {e}" for e in grpo_errs)
     else:
@@ -833,7 +989,7 @@ def main() -> None:
     # ── 3. RC-GRPO dataset (same format as GRPO) ───────────────────
     logger.info("Building RC-GRPO dataset...")
     rcgrpo_records = build_grpo_dataset(gold_samples, function_library, argument_values)
-    rcgrpo_errs = validate_grpo(rcgrpo_records, len(gold_samples))
+    rcgrpo_errs = validate_grpo(rcgrpo_records, len(gold_samples), function_library)
     if rcgrpo_errs:
         errs.extend(f"rcgrpo: {e}" for e in rcgrpo_errs)
     else:
@@ -849,7 +1005,7 @@ def main() -> None:
         argument_values,
         failures_per_expert=args.failures_per_expert,
     )
-    rctp_errs = validate_rctp(rctp_trajectories, len(gold_samples))
+    rctp_errs = validate_rctp(rctp_trajectories, len(gold_samples), function_library)
     if rctp_errs:
         errs.extend(f"rctp: {e}" for e in rctp_errs)
     else:
@@ -858,6 +1014,7 @@ def main() -> None:
                 "prompt_messages": t.prompt_messages,
                 "response_text": t.response_text,
                 "reward": t.reward,
+                "_source_id": t._source_id,
             }
             for t in rctp_trajectories
         ]
