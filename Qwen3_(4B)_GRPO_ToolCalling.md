@@ -338,6 +338,7 @@ import random
 import time
 import warnings
 import logging
+import datetime
 from pathlib import Path
 from typing import Any, Optional, List, Dict, Callable, Tuple
 from dataclasses import dataclass, field
@@ -2215,63 +2216,145 @@ class RCGRPOTrainer(GRPOTrainer):
         return super()._generate_and_score_completions(conditioned_inputs)
 
 
-class FGExPOGRPOTrainer(GRPOTrainer):
-    """GRPOTrainer with Accuracy-Conditioned KL Scaling (FG-ExPO, arXiv 2605.11403).
+class GTPOTrainer(RCGRPOTrainer):
+    """
+    GTPO: Conflict-aware gradient correction (Simoni et al., arXiv 2508.03772).
 
-    Replaces the fixed KL coefficient β with a dynamic β_eff that depends on
-    the batch's mean accuracy:
-
-        β_eff = β_base × (1 - mean_batch_accuracy)²
-
-    When accuracy is low (model failing), β_eff ≈ 0 → no KL constraint → free
-    exploration.  When accuracy is high (model succeeding), β_eff → β_base →
-    full regularization to preserve stability.
-
-    Reference: FG-ExPO Section 3.2 (AKL component), Eq. 4:
-        ρ(acc) = (1 - acc)²
-        β_eff = β_base × ρ(mean_batch_acc)
+    Inherits reward-conditioned rollout from RCGRPOTrainer and overrides
+    `_compute_loss` with:
+    - λ_{i,t} ∈ {0,1,2} conflict mask: tokens shared across correct and
+      incorrect trajectories get λ=0 (shielded from contradictory gradients)
+    - δ_i entropy filter: skips groups where mean entropy > threshold
+    - Entropy regularization replacing KL: A' = A - γ·⟨H⟩
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, entropy_threshold: float = 0.5, gamma: float = 0.01, **kwargs):
         super().__init__(*args, **kwargs)
-        # Updated after each scoring step with the mean batch accuracy.
-        self._last_batch_accuracy: float = 0.5
+        self.entropy_threshold = entropy_threshold  # δ filter gate
+        self.gamma = gamma  # entropy regularization coefficient
 
-    def _generate_and_score_completions(self, inputs):
-        """Override to capture batch accuracy from the computed rewards."""
-        # Delegate to parent — this returns the standard output dict with
-        # rewards, completion_mask, advantages, etc.
-        result = super()._generate_and_score_completions(inputs)
+    def _compute_loss(self, model, inputs, num_items_in_batch=None):
+        # ── 1. Forward pass: get current-policy logits ──────────────────
+        outputs = model(
+            input_ids=inputs["input_ids"],
+            attention_mask=inputs["attention_mask"],
+            return_dict=True,
+        )
+        logits = outputs.logits[:, :-1, :]  # Shift for next-token pred
 
-        # Compute batch mean accuracy from the raw reward scores.
-        # The first reward function is always function_reward (binary per
-        # completion).  Take the mean across the batch as our accuracy proxy.
-        if "rewards" in result and result["rewards"].numel() > 0:
-            # rewards shape: (batch_size, num_reward_funcs)
-            # function_reward is index 0 → binary {0, 1}.
-            func_rewards = result["rewards"][:, 0]
-            mean_acc = func_rewards.mean().item()
-            self._last_batch_accuracy = mean_acc
+        # ── 2. Compute per-token log-probs ─────────────────────────────
+        # Reimplementation of TRL's internal helper for compat
+        log_probs = logits.log_softmax(dim=-1)
+        per_token_logps = log_probs.gather(
+            dim=-1,
+            index=inputs["input_ids"][:, 1:].unsqueeze(-1),
+        ).squeeze(-1)
 
-        return result
+        # ── 3. Get stored tensors ───────────────────────────────────────
+        old_per_token_logps = inputs["old_per_token_logps"]       # (B, T)
+        advantages = inputs["advantages"]                         # (B,)
+        # completion_mask: 1 for completion tokens, 0 elsewhere
+        completion_mask = inputs.get(
+            "completion_mask",
+            (inputs["input_ids"][:, 1:] != self.processing_class.pad_token_id).float(),
+        )
 
-    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
-        """Scale β by (1 - mean_batch_accuracy)² before calling parent loss.
+        # ── 4. Log ratio and importance weights ───────────────────────
+        log_ratio = per_token_logps - old_per_token_logps              # (B, T)
+        ratios = torch.exp(log_ratio)                                  # (B, T)
 
-        Because the KL penalty is added inside the parent's loss computation
-        as ``per_token_loss = per_token_loss + self.beta * per_token_kl``,
-        temporarily mutating ``self.beta`` is the simplest intervention point
-        that affects the loss without reimplementing the full GRPO loss.
-        """
-        original_beta = self.beta
-        try:
-            # FG-ExPO Eq. 4: β_eff = β_base × (1 - acc)²
-            acc = self._last_batch_accuracy
-            scale = (1.0 - acc) ** 2
-            self.beta = original_beta * scale
-            return super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
-        finally:
-            self.beta = original_beta
+        # ── 5. Shape into groups and classify ──────────────────────────
+        G = self.args.num_generations
+        B, T = log_ratio.shape
+        num_groups = B // G
+
+        adv_group = advantages.view(num_groups, G)                     # (num_groups, G)
+        median_adv = adv_group.median(dim=1, keepdim=True).values      # per-group median
+        is_high = (adv_group > median_adv).float()                     # 1 = high-reward traj
+        is_high_flat = is_high.view(B)                                 # (B,)
+
+        # ── 6. Build conflict mask λ_{i,t} via log-prob similarity ────
+        # Tokens with similar log-probs in high- and low-advantage
+        # trajectories are "shared" — shield them from contradictory gradients.
+        # λ=0 (shared, shielded), λ=2 (high-only, protected), λ=1 (default).
+        conflict_mask = torch.ones_like(ratios)                         # default λ=1
+        for g in range(num_groups):
+            grp_start = g * G
+            grp_end = grp_start + G
+            grp_logp = per_token_logps[grp_start:grp_end]               # (G, T)
+            grp_is_high = is_high_flat[grp_start:grp_end]               # (G,)
+
+            # Log-prob centroids for high- and low-advantage groups
+            high_logp = grp_logp[grp_is_high > 0].mean(dim=0, keepdim=True)   # (1, T)
+            low_logp = grp_logp[grp_is_high == 0].mean(dim=0, keepdim=True)   # (1, T)
+
+            if high_logp.shape[0] == 0 or low_logp.shape[0] == 0:
+                continue  # no conflict — all λ=1
+
+            # Shared token: |logp_diff| < 0.1 nats across groups
+            logp_diff = (high_logp - low_logp).abs()                     # (1, T)
+            is_shared = logp_diff < 0.1                                  # (1, T)
+
+            # High-only token: logp is > 0.1 nats higher in high-reward group
+            high_logp_minus_low = (high_logp - low_logp)                  # (1, T)
+            is_high_only = high_logp_minus_low > 0.1                     # (1, T)
+
+            group_mask = torch.where(
+                is_shared,
+                torch.tensor(0.0, device=ratios.device),                 # λ=0: shielded
+                torch.where(
+                    is_high_only,
+                    torch.tensor(2.0, device=ratios.device),             # λ=2: protected
+                    torch.tensor(1.0, device=ratios.device),             # λ=1: normal
+                ),
+            )
+            conflict_mask[grp_start:grp_end] = group_mask.expand_as(grp_logp)
+
+        # ── 7. Entropy filter δ_i and entropy regularization ───────────
+        probs = logits.softmax(dim=-1)                                 # (B, T-1, V)
+        token_entropy = -(probs * probs.log()).sum(dim=-1)             # (B, T-1)
+
+        # Match shape: pad or slice to T (if T-1 vs T mismatch)
+        if token_entropy.shape[1] < T:
+            # entropy is shorter than log_ratio — pad at the end
+            pad = torch.zeros(B, T - token_entropy.shape[1], device=token_entropy.device)
+            token_entropy_padded = torch.cat([token_entropy, pad], dim=1)
+        else:
+            token_entropy_padded = token_entropy[:, :T]
+
+        # Mean entropy per trajectory (masked)
+        mean_entropy = (token_entropy_padded * completion_mask).sum(dim=-1) / completion_mask.sum(dim=-1).clamp(min=1)  # (B,)
+
+        # δ_i: skip uncertain trajectories
+        entropy_filter = (mean_entropy < self.entropy_threshold).float()  # (B,)
+        entropy_filter_expanded = entropy_filter.unsqueeze(-1)           # (B, 1)
+
+        # Adjusted advantage: A'_i = A_i - γ·⟨H⟩_i
+        adj_advantage = advantages - self.gamma * mean_entropy           # (B,)
+        adj_adv_expanded = adj_advantage.unsqueeze(-1)                   # (B, 1)
+
+        # ── 8. GTPO per-token loss ─────────────────────────────────────
+        # J = (1/G) Σ_i (δ_i · (Â_i - γ⟨H⟩_i) / |o_i|) · Σ_t r_i,t · λ_i,t
+        completion_lengths = completion_mask.sum(dim=-1, keepdim=True).clamp(min=1)  # (B, 1)
+
+        per_token_loss = -(
+            entropy_filter_expanded
+            * adj_adv_expanded
+            / completion_lengths
+            * ratios
+            * conflict_mask
+        )
+
+        # ── 9. Aggregate (DAPO-style: sum / global active token count) ─
+        world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        if num_items_in_batch is not None:
+            normalizer = num_items_in_batch / world_size
+        else:
+            # Fallback for TRL v0.22.2 which may not pass num_items_in_batch
+            normalizer = completion_mask.sum() / world_size
+        loss = (per_token_loss * completion_mask).sum() / normalizer
+
+        return loss
 
 
 def rc_grpo_reward_func(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
@@ -2712,10 +2795,8 @@ def build_grpo_config(config: dict, output_dir: str | None = None) -> GRPOConfig
         max_prompt_length=data_cfg["max_prompt_length"],
         max_completion_length=data_cfg["max_completion_length"],
         temperature=grpo_cfg["temperature"],
-        # FIXED: symmetric clipping only (Table 10: Clip Ratio = 0.2).
-        # epsilon_high removed entirely — do NOT pass it, TRL will default
-        # to symmetric clipping when only `epsilon` is set.
         epsilon=grpo_cfg["epsilon"],
+        epsilon_high=grpo_cfg.get("epsilon_high", 0.28),  # asymmetric clip (CISPO/DAPO/GT)
         beta=grpo_cfg["kl_coefficient"],  # Table 10: KL coeff beta=0.1
         loss_type=grpo_cfg["loss_type"],
         mask_truncated_completions=grpo_cfg["mask_truncated_completions"],
@@ -3174,9 +3255,10 @@ if ENV_NAME == "colab":
 
 ```python
 # ===================== CONFIGURATION =====================
-MODE = "grpo"  # one of: "sft", "grpo", "rc_grpo", "rctp_ft"
+MODE = "rc_grpo"  # one of: "sft", "grpo", "rc_grpo", "rctp_ft"
 assert MODE in ("sft", "grpo", "rc_grpo", "rctp_ft"), \
     f"Unknown MODE: {MODE}. Choose from: sft, grpo, rc_grpo, rctp_ft"
+# loss_type is selected via TRAIN_CONFIG["grpo"]["loss_type"] (only used when MODE="rc_grpo")
 EVAL_USE_VLLM = True  # Use vLLM batch eval for ~10x speedup
 os.environ["KL_COEFFICIENT"] = "0"
 DATA_DIR = Path(DATA_MOUNT)
@@ -3215,7 +3297,7 @@ TRAIN_CONFIG = {
         "optim": "adamw_8bit",
         "per_device_train_batch_size": 4,
         "gradient_accumulation_steps": 4,
-        "num_generations": 8,         # Table 10: Group Size G = 5
+        "num_generations": 16,        # 4-way comparison: G=16
         "max_steps": 500,             # reduce for quick test; increase for full run
         "save_steps": 50,
         "logging_steps": 1,
@@ -3228,6 +3310,7 @@ TRAIN_CONFIG = {
         "test_path": str(DATA_DIR / "test_dataset_cleaned.jsonl"),
         "sft_path": str(DATA_DIR / "sft_dataset.jsonl"),
         "grpo_path": str(DATA_DIR / "grpo_dataset_stage2.jsonl"),
+        "rcgrpo_path": str(DATA_DIR / "rcgrpo_dataset_stage2.jsonl"),
         "rctp_path": str(DATA_DIR / "rctp_dataset.jsonl"),
         "max_prompt_length": 7680,
         "max_completion_length": 512,
@@ -3237,17 +3320,18 @@ TRAIN_CONFIG = {
     "grpo": {
         "temperature": 1.0,
         "epsilon": 0.2,            # Table 10: symmetric Clip Ratio = 0.2
-        "kl_coefficient": float(os.environ.get("KL_COEFFICIENT", "0.1")),
-                                   # Override via env var.  Set "0.0" for
-                                   # reference-free (DAPO-style), "0.001" for
-                                   # minimal, "0.01" for moderate.  Can also
-                                   # be changed at runtime via TRAIN_CONFIG.
-        "adaptive_beta": os.environ.get("KL_COEFFICIENT", "").lower() == "adaptive",
-                                   # If set, FGExPO-style accuracy-conditioned
-                                   # KL scaling: β_eff = β_base × (1 - acc)².
-                                   # Use via: KL_COEFFICIENT=adaptive
-        "loss_type": "grpo",
+        "kl_coefficient": float(os.environ.get("KL_COEFFICIENT", "0.0")),
+                                   # Override via env var (default 0.0 for
+                                   # reference-free comparison across all
+                                   # 4 loss types).  Also changeable at
+                                   # runtime via TRAIN_CONFIG.
+        "loss_type": "grpo",     # Options: "grpo", "dapo", "cispo", "gtpo"
+        "epsilon_high": 0.28,     # Upper clip bound (CISPO/DAPO asymmetric clip)
         "mask_truncated_completions": True,
+    },
+    "gtpo": {
+        "entropy_threshold": 0.5,  # δ filter: skip trajectories with mean entropy > this
+        "gamma": 0.01,              # γ: entropy regularization coefficient
     },
     "sft": {
         "output_dir": "outputs/sft_model",
@@ -3375,12 +3459,89 @@ if MODE == "sft":
 
     print("=== SFT dataset sample ===")
     for k, v in dataset[0].items():
-        print(f"  {k}: {str(v)[:200]}")
+        print(f"  {k}: {str(v)}")
     print("===========================")
+
+    # ── Hyperparameter snapshot ──
+    _sft_table = [
+        ["Mode", "SFT - Supervised Fine-Tuning"],
+        ["Dataset", TRAIN_CONFIG["data"]["sft_path"]],
+        ["Samples", len(dataset)],
+        ["Base model", TRAIN_CONFIG["model"]["name"]],
+        ["Max seq length", TRAIN_CONFIG["model"]["max_seq_length"]],
+        ["Load in 4bit", TRAIN_CONFIG["model"]["load_in_4bit"]],
+        ["Full finetuning", TRAIN_CONFIG["model"]["full_finetuning"]],
+        ["LoRA rank (r)", TRAIN_CONFIG["lora"]["r"]],
+        ["LoRA dropout", TRAIN_CONFIG["lora"]["lora_dropout"]],
+        ["LoRA targets", TRAIN_CONFIG["lora"]["target_modules"]],
+        ["LoRA bias", TRAIN_CONFIG["lora"]["bias"]],
+        ["Gradient checkpointing", TRAIN_CONFIG["lora"]["use_gradient_checkpointing"]],
+        ["Learning rate", training_args.learning_rate],
+        ["Batch size (per device)", training_args.per_device_train_batch_size],
+        ["Gradient accumulation steps", training_args.gradient_accumulation_steps],
+        ["Num epochs", training_args.num_train_epochs],
+        ["Max grad norm", training_args.max_grad_norm],
+        ["Weight decay", training_args.weight_decay],
+        ["Optimizer", training_args.optim],
+        ["Warmup ratio", training_args.warmup_ratio],
+        ["Seed", training_args.seed],
+        ["Logging steps", training_args.logging_steps],
+        ["Save strategy", training_args.save_strategy],
+        ["Save total limit", training_args.save_total_limit],
+        ["Dataloader workers", training_args.dataloader_num_workers],
+        ["FP16", training_args.fp16],
+        ["BF16", training_args.bf16],
+        ["Precision", "bf16" if torch.cuda.is_bf16_supported() else "fp16"],
+    ]
+    print(tabulate(_sft_table, headers=["Hyperparameter", "Value"], tablefmt="fancy_grid"))
 
     trainer.train()
     trainer.save_model(sft_cfg["output_dir"])
     tokenizer.save_pretrained(Path(sft_cfg["output_dir"]))
+
+    # ── Save hyperparameters ──
+    _sft_hp = {
+        "mode": "sft",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "dataset": {
+            "path": TRAIN_CONFIG["data"]["sft_path"],
+            "samples": len(dataset),
+        },
+        "model": {
+            "base_model": TRAIN_CONFIG["model"]["name"],
+            "max_seq_length": TRAIN_CONFIG["model"]["max_seq_length"],
+            "load_in_4bit": TRAIN_CONFIG["model"]["load_in_4bit"],
+            "full_finetuning": TRAIN_CONFIG["model"]["full_finetuning"],
+        },
+        "lora": {
+            "r": TRAIN_CONFIG["lora"]["r"],
+            "lora_dropout": TRAIN_CONFIG["lora"]["lora_dropout"],
+            "target_modules": TRAIN_CONFIG["lora"]["target_modules"],
+            "bias": TRAIN_CONFIG["lora"]["bias"],
+            "use_gradient_checkpointing": TRAIN_CONFIG["lora"]["use_gradient_checkpointing"],
+        },
+        "training": {
+            "learning_rate": training_args.learning_rate,
+            "per_device_train_batch_size": training_args.per_device_train_batch_size,
+            "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+            "num_train_epochs": training_args.num_train_epochs,
+            "max_grad_norm": training_args.max_grad_norm,
+            "weight_decay": training_args.weight_decay,
+            "optim": training_args.optim,
+            "warmup_ratio": training_args.warmup_ratio,
+            "seed": training_args.seed,
+            "logging_steps": training_args.logging_steps,
+            "save_strategy": training_args.save_strategy,
+            "save_total_limit": training_args.save_total_limit,
+            "dataloader_num_workers": training_args.dataloader_num_workers,
+        },
+        "precision": "bf16" if torch.cuda.is_bf16_supported() else "fp16",
+    }
+    _sft_out = Path(sft_cfg["output_dir"])
+    _sft_out.mkdir(parents=True, exist_ok=True)
+    with open(_sft_out / "training_hyperparameters.json", "w") as f:
+        json.dump(_sft_hp, f, indent=2, ensure_ascii=False)
+
     print(f"[SFT] Model saved -> {sft_cfg['output_dir']}")
 ```
 
@@ -3513,14 +3674,92 @@ if MODE == "rctp_ft":
 
     print("=== RCTP dataset sample ===")
     for k, v in train_dataset[0].items():
-        print(f"  {k}: {str(v)[:200]}")
+        print(f"  {k}: {str(v)}")
     print("===========================")
 
     SAMPLE_LOG.info("stage=pre_stage1_train type=summary trajectories=%d epochs=%d batch_size=%d",
                     len(rctp_trajectories), training_args.num_train_epochs, training_args.per_device_train_batch_size)
+
+    # ── Hyperparameter snapshot ──
+    _rctp_table = [
+        ["Mode", "RCTP-FT (Stage 1)"],
+        ["Dataset", TRAIN_CONFIG["data"]["rctp_path"]],
+        ["Trajectories", len(rctp_trajectories)],
+        ["High reward probability", high_reward_probability],
+        ["Base model", TRAIN_CONFIG["model"]["name"]],
+        ["Max seq length", TRAIN_CONFIG["model"]["max_seq_length"]],
+        ["Load in 4bit", TRAIN_CONFIG["model"]["load_in_4bit"]],
+        ["LoRA rank (r)", TRAIN_CONFIG["lora"]["r"]],
+        ["LoRA dropout", TRAIN_CONFIG["lora"]["lora_dropout"]],
+        ["LoRA targets", TRAIN_CONFIG["lora"]["target_modules"]],
+        ["LoRA bias", TRAIN_CONFIG["lora"]["bias"]],
+        ["Gradient checkpointing", TRAIN_CONFIG["lora"]["use_gradient_checkpointing"]],
+        ["Learning rate", training_args.learning_rate],
+        ["Batch size (per device)", training_args.per_device_train_batch_size],
+        ["Gradient accumulation steps", training_args.gradient_accumulation_steps],
+        ["Num epochs", training_args.num_train_epochs],
+        ["Max grad norm", training_args.max_grad_norm],
+        ["Weight decay", training_args.weight_decay],
+        ["Optimizer", training_args.optim],
+        ["Warmup ratio", training_args.warmup_ratio],
+        ["Seed", training_args.seed],
+        ["Logging steps", training_args.logging_steps],
+        ["Save strategy", training_args.save_strategy],
+        ["Save total limit", training_args.save_total_limit],
+        ["Dataloader workers", training_args.dataloader_num_workers],
+        ["FP16", training_args.fp16],
+        ["BF16", training_args.bf16],
+        ["Precision", "bf16" if torch.cuda.is_bf16_supported() else "fp16"],
+    ]
+    print(tabulate(_rctp_table, headers=["Hyperparameter", "Value"], tablefmt="fancy_grid"))
+
     trainer.train()
     trainer.save_model(rctp_cfg["output_dir"])
     tokenizer.save_pretrained(Path(rctp_cfg["output_dir"]))
+
+    # ── Save hyperparameters ──
+    _rctp_hp = {
+        "mode": "rctp_ft",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "dataset": {
+            "path": TRAIN_CONFIG["data"]["rctp_path"],
+            "trajectories": len(rctp_trajectories),
+            "high_reward_probability": high_reward_probability,
+        },
+        "model": {
+            "base_model": TRAIN_CONFIG["model"]["name"],
+            "max_seq_length": TRAIN_CONFIG["model"]["max_seq_length"],
+            "load_in_4bit": TRAIN_CONFIG["model"]["load_in_4bit"],
+        },
+        "lora": {
+            "r": TRAIN_CONFIG["lora"]["r"],
+            "lora_dropout": TRAIN_CONFIG["lora"]["lora_dropout"],
+            "target_modules": TRAIN_CONFIG["lora"]["target_modules"],
+            "bias": TRAIN_CONFIG["lora"]["bias"],
+            "use_gradient_checkpointing": TRAIN_CONFIG["lora"]["use_gradient_checkpointing"],
+        },
+        "training": {
+            "learning_rate": training_args.learning_rate,
+            "per_device_train_batch_size": training_args.per_device_train_batch_size,
+            "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+            "num_train_epochs": training_args.num_train_epochs,
+            "max_grad_norm": training_args.max_grad_norm,
+            "weight_decay": training_args.weight_decay,
+            "optim": training_args.optim,
+            "warmup_ratio": training_args.warmup_ratio,
+            "seed": training_args.seed,
+            "logging_steps": training_args.logging_steps,
+            "save_strategy": training_args.save_strategy,
+            "save_total_limit": training_args.save_total_limit,
+            "dataloader_num_workers": training_args.dataloader_num_workers,
+        },
+        "precision": "bf16" if torch.cuda.is_bf16_supported() else "fp16",
+    }
+    _rctp_out = Path(rctp_cfg["output_dir"])
+    _rctp_out.mkdir(parents=True, exist_ok=True)
+    with open(_rctp_out / "training_hyperparameters.json", "w") as f:
+        json.dump(_rctp_hp, f, indent=2, ensure_ascii=False)
+
     print(f"[Stage 1] RCTP-FT checkpoint saved -> {rctp_cfg['output_dir']}")
     print("(This checkpoint becomes pi_ref for Stage 2, per Algorithm 1 line 9.)")
 ```
@@ -3554,7 +3793,7 @@ if MODE in ("grpo", "rc_grpo"):
     # The adapter checkpoint is typically the Stage 1 (RCTP-FT) output.
     # Adjust these to point to your trained checkpoint directories.
     base_model_path = "unsloth/Qwen3-4B-Instruct-2507"
-    adapter_model_path = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/sft_model/sft_model"  # Stage 1 output
+    adapter_model_path = "outputs/rctp_ft_model"  # Stage 1 (RCTP-FT) output
 
     print(f"[Stage 2] Loading base_model_path = {base_model_path}")
     print(f"[Stage 2] Loading adapter_model_path = {adapter_model_path}")
@@ -3576,46 +3815,45 @@ if MODE in ("grpo", "rc_grpo"):
     print(f"  additional_special_tokens: {tokenizer.additional_special_tokens}")
 
     from datasets import Dataset
-    dataset = Dataset.from_list(load_jsonl(TRAIN_CONFIG["data"]["grpo_path"]))
+    if MODE == "rc_grpo":
+        data_path = TRAIN_CONFIG["data"].get("rcgrpo_path", TRAIN_CONFIG["data"]["grpo_path"])
+    else:
+        data_path = TRAIN_CONFIG["data"]["grpo_path"]
+    dataset = Dataset.from_list(load_jsonl(data_path))
 
     grpo_args = build_grpo_config(TRAIN_CONFIG, output_dir=TRAIN_CONFIG["training"]["output_dir"])
 
     if MODE == "rc_grpo":
-        adaptive_beta = TRAIN_CONFIG["grpo"].get("adaptive_beta", False)
-        _rc_cls = type(
-            "FGExPORCGRPOTrainer",
-            (FGExPOGRPOTrainer, RCGRPOTrainer),
-            {"__doc__": RCGRPOTrainer.__doc__},
-        ) if adaptive_beta else RCGRPOTrainer
-        trainer = _rc_cls(
+        loss_type = TRAIN_CONFIG["grpo"]["loss_type"]
+        shared_kwargs = dict(
             model=model,
             processing_class=tokenizer,
             reward_funcs=build_trl_reward_functions("rc_grpo"),
             args=grpo_args,
             train_dataset=dataset,
-            high_reward_probability=high_reward_probability,  # from Stage 1 stats, Eq. 3
+            high_reward_probability=high_reward_probability,
         )
-        if adaptive_beta:
-            print(f"  FG-ExPO adaptive β enabled (RC-GRPO, base β = {grpo_args.beta})")
+        if loss_type == "gtpo":
+            trainer = GTPOTrainer(
+                **shared_kwargs,
+                entropy_threshold=TRAIN_CONFIG["gtpo"]["entropy_threshold"],
+                gamma=TRAIN_CONFIG["gtpo"]["gamma"],
+            )
+        else:
+            trainer = RCGRPOTrainer(**shared_kwargs)
     elif MODE == "grpo":
-        # If adaptive beta is enabled (KL_COEFFICIENT=adaptive),
-        # use FG-ExPO-style accuracy-conditioned KL scaling.
-        adaptive_beta = TRAIN_CONFIG["grpo"].get("adaptive_beta", False)
-        _trainer_cls = FGExPOGRPOTrainer if adaptive_beta else GRPOTrainer
-        trainer = _trainer_cls(
+        trainer = GRPOTrainer(
             model=model,
             processing_class=tokenizer,
             reward_funcs=build_trl_reward_functions("grpo"),
             args=grpo_args,
             train_dataset=dataset,
         )
-        if adaptive_beta:
-            print(f"  FG-ExPO adaptive β enabled (base β = {grpo_args.beta})")
 
     print(f"Trainer initialized for {MODE}")
     print("=== GRPO dataset sample ===")
     for k, v in dataset[0].items():
-        print(f"  {k}: {str(v)[:200]}")
+        print(f"  {k}: {str(v)}")
     print("===========================")
 
     custom_tags = ["<reasoning>", "</reasoning>", "<tool_call>", "</tool_call>", HIGH_REWARD_TOKEN, LOW_REWARD_TOKEN]
@@ -3627,6 +3865,51 @@ if MODE in ("grpo", "rc_grpo"):
         print("No conflicts detected with custom tags.")
     SAMPLE_LOG.info("stage=pre_stage2_train type=summary algorithm=%s dataset_size=%d generations=%d",
                     MODE, len(dataset), grpo_args.num_generations)
+
+    # ── Hyperparameter snapshot ──
+    _grpo_table = [
+        ["Algorithm", f"RC-{TRAIN_CONFIG['grpo']['loss_type'].upper()}" if MODE == "rc_grpo" else "Vanilla GRPO"],
+        ["Trainer", trainer.__class__.__name__],
+        ["Dataset", data_path],
+        ["Samples", len(dataset)],
+        ["Base model", base_model_path],
+        ["Adapter model", adapter_model_path],
+        ["Base model name", TRAIN_CONFIG["model"]["name"]],
+        ["Max seq length", TRAIN_CONFIG["model"]["max_seq_length"]],
+        ["Load in 4bit", TRAIN_CONFIG["model"]["load_in_4bit"]],
+        ["GPU memory util (Unsloth)", TRAIN_CONFIG["model"]["gpu_memory_utilization"]],
+        ["Full finetuning", TRAIN_CONFIG["model"]["full_finetuning"]],
+        ["LoRA rank (r)", TRAIN_CONFIG["lora"]["r"]],
+        ["LoRA dropout", TRAIN_CONFIG["lora"]["lora_dropout"]],
+        ["LoRA targets", TRAIN_CONFIG["lora"]["target_modules"]],
+        ["LoRA bias", TRAIN_CONFIG["lora"]["bias"]],
+        ["Learning rate", TRAIN_CONFIG["training"]["learning_rate"]],
+        ["Adam beta1", TRAIN_CONFIG["training"]["adam_beta1"]],
+        ["Adam beta2", TRAIN_CONFIG["training"]["adam_beta2"]],
+        ["Weight decay", TRAIN_CONFIG["training"]["weight_decay"]],
+        ["Warmup ratio", TRAIN_CONFIG["training"]["warmup_ratio"]],
+        ["LR scheduler", TRAIN_CONFIG["training"]["lr_scheduler_type"]],
+        ["Optimizer", TRAIN_CONFIG["training"]["optim"]],
+        ["Batch size (per device)", TRAIN_CONFIG["training"]["per_device_train_batch_size"]],
+        ["Gradient accumulation steps", TRAIN_CONFIG["training"]["gradient_accumulation_steps"]],
+        ["Num generations", TRAIN_CONFIG["training"]["num_generations"]],
+        ["Max steps", TRAIN_CONFIG["training"]["max_steps"]],
+        ["Save steps", TRAIN_CONFIG["training"]["save_steps"]],
+        ["Logging steps", TRAIN_CONFIG["training"]["logging_steps"]],
+        ["Max grad norm", TRAIN_CONFIG["training"]["max_grad_norm"]],
+        ["Seed", TRAIN_CONFIG["training"]["seed"]],
+        ["Temperature", TRAIN_CONFIG["grpo"]["temperature"]],
+        ["Epsilon (clip)", TRAIN_CONFIG["grpo"]["epsilon"]],
+        ["Epsilon high", TRAIN_CONFIG["grpo"].get("epsilon_high", "N/A")],
+        ["KL coefficient (beta)", TRAIN_CONFIG["grpo"]["kl_coefficient"]],
+        ["Loss type", TRAIN_CONFIG["grpo"]["loss_type"]],
+        ["Mask truncated", TRAIN_CONFIG["grpo"]["mask_truncated_completions"]],
+        ["Max prompt length", TRAIN_CONFIG["data"]["max_prompt_length"]],
+        ["Max completion length", TRAIN_CONFIG["data"]["max_completion_length"]],
+        ["Precision", "bf16" if torch.cuda.is_bf16_supported() else "fp16"],
+    ]
+    print(tabulate(_grpo_table, headers=["Hyperparameter", "Value"], tablefmt="fancy_grid"))
+
     print("Starting training...")
     trainer.train()
     print("Training completed.")
@@ -3635,6 +3918,67 @@ if MODE in ("grpo", "rc_grpo"):
     output_dir = MODE_OUTPUT_DIR
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
+
+    # ── Save hyperparameters ──
+    _grpo_hp = {
+        "mode": MODE,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "dataset": {
+            "path": data_path,
+            "samples": len(dataset),
+        },
+        "model": {
+            "base_model": TRAIN_CONFIG["model"]["name"],
+            "base_model_path": base_model_path,
+            "adapter_model_path": adapter_model_path,
+            "max_seq_length": TRAIN_CONFIG["model"]["max_seq_length"],
+            "load_in_4bit": TRAIN_CONFIG["model"]["load_in_4bit"],
+            "gpu_memory_utilization": TRAIN_CONFIG["model"]["gpu_memory_utilization"],
+            "full_finetuning": TRAIN_CONFIG["model"]["full_finetuning"],
+        },
+        "lora": {
+            "r": TRAIN_CONFIG["lora"]["r"],
+            "lora_dropout": TRAIN_CONFIG["lora"]["lora_dropout"],
+            "target_modules": TRAIN_CONFIG["lora"]["target_modules"],
+            "bias": TRAIN_CONFIG["lora"]["bias"],
+        },
+        "training": {
+            "learning_rate": TRAIN_CONFIG["training"]["learning_rate"],
+            "adam_beta1": TRAIN_CONFIG["training"]["adam_beta1"],
+            "adam_beta2": TRAIN_CONFIG["training"]["adam_beta2"],
+            "weight_decay": TRAIN_CONFIG["training"]["weight_decay"],
+            "warmup_ratio": TRAIN_CONFIG["training"]["warmup_ratio"],
+            "lr_scheduler_type": TRAIN_CONFIG["training"]["lr_scheduler_type"],
+            "optim": TRAIN_CONFIG["training"]["optim"],
+            "per_device_train_batch_size": TRAIN_CONFIG["training"]["per_device_train_batch_size"],
+            "gradient_accumulation_steps": TRAIN_CONFIG["training"]["gradient_accumulation_steps"],
+            "num_generations": TRAIN_CONFIG["training"]["num_generations"],
+            "max_steps": TRAIN_CONFIG["training"]["max_steps"],
+            "save_steps": TRAIN_CONFIG["training"]["save_steps"],
+            "logging_steps": TRAIN_CONFIG["training"]["logging_steps"],
+            "max_grad_norm": TRAIN_CONFIG["training"]["max_grad_norm"],
+            "seed": TRAIN_CONFIG["training"]["seed"],
+        },
+        "rl": {
+            "temperature": TRAIN_CONFIG["grpo"]["temperature"],
+            "epsilon": TRAIN_CONFIG["grpo"]["epsilon"],
+            "epsilon_high": TRAIN_CONFIG["grpo"].get("epsilon_high"),
+            "beta": TRAIN_CONFIG["grpo"]["kl_coefficient"],
+            "loss_type": TRAIN_CONFIG["grpo"]["loss_type"],
+            "mask_truncated_completions": TRAIN_CONFIG["grpo"]["mask_truncated_completions"],
+        },
+        "gtpo": dict(TRAIN_CONFIG.get("gtpo", {})),
+        "data": {
+            "max_prompt_length": TRAIN_CONFIG["data"]["max_prompt_length"],
+            "max_completion_length": TRAIN_CONFIG["data"]["max_completion_length"],
+        },
+        "precision": "bf16" if torch.cuda.is_bf16_supported() else "fp16",
+    }
+    _grpo_out = Path(output_dir)
+    _grpo_out.mkdir(parents=True, exist_ok=True)
+    with open(_grpo_out / "training_hyperparameters.json", "w") as f:
+        json.dump(_grpo_hp, f, indent=2, ensure_ascii=False)
+
     print(f"Model saved to {output_dir}")
     !zip -r {output_dir}.zip {output_dir}
     from IPython.display import FileLink
