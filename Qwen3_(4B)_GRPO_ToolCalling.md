@@ -4393,6 +4393,7 @@ if ENV_NAME == "colab":
 os.environ["TORCH_CUDAGRAPH_DISABLE"] = "1"  # FIX: avoid stale CUDA graph pool crash (use_count > 0 assertion)
 os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval: ensures no dual vLLM engines; gpu_memory_utilization is passed explicitly from TRAIN_CONFIG
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
+MODE_OUTPUT_DIR = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/sft_model/sft_model"
 if Path(test_dataset_path).exists():
     retriever = FunctionRetriever(function_library, method="hybrid")
     sandbox = Sandbox(function_library)
