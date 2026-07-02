@@ -2116,6 +2116,8 @@ def compute_action_coverage_reward(
 from trl import GRPOTrainer, GRPOConfig
 import numpy as _np
 import random as _random_module
+from torch.distributed import gather_object, broadcast_object_list
+from contextlib import nullcontext
 
 
 def sample_reward_tokens_for_group(
@@ -2146,6 +2148,119 @@ def inject_reward_token_into_messages(
         else:
             out.append(msg)
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# MMR diversity reweighting functions (from WeiKangda/MMR-GRPO, ACL 2026)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def mmr_reweight_original(rewards, embeddings, lambda_div=0.7):
+    """
+    Original MMR: greedy selection with fixed λ.
+    rewards: (B,)
+    embeddings: (B, D), L2-normalized
+    Returns adjusted rewards in original order.
+    """
+    N = rewards.size(0)
+    device = rewards.device
+    sim_matrix = embeddings @ embeddings.T
+    sim_matrix = sim_matrix - torch.eye(N, device=device) * 1e9
+
+    adjusted = torch.zeros_like(rewards)
+    best_sim = torch.zeros(N, device=device)
+    selected = torch.zeros(N, dtype=torch.bool, device=device)
+
+    first = torch.argmax(rewards)
+    selected[first] = True
+    adjusted[first] = rewards[first]
+
+    for _ in range(N - 1):
+        best_sim = torch.max(best_sim, sim_matrix[:, selected].max(dim=1).values)
+        scores = lambda_div * rewards - (1.0 - lambda_div) * best_sim
+        scores[selected] = -1e9
+        next_idx = torch.argmax(scores)
+        selected[next_idx] = True
+        adjusted[next_idx] = scores[next_idx]
+
+    return adjusted
+
+
+def mmr_reweight_std(rewards, embeddings, temp=2.0, eps=1e-8):
+    """
+    Adaptive λ from reward std: λ = rel_std_scaled / (1 + rel_std_scaled).
+    Higher std → more diversity emphasis.
+    Returns (adjusted_rewards, lambda_used).
+    """
+    N = rewards.size(0)
+    device = rewards.device
+
+    std = rewards.std(unbiased=False)
+    mean = rewards.mean()
+    rel_std = std / (mean.abs() + eps)
+    rel_std_scaled = rel_std * temp
+    lambda_div = rel_std_scaled / (1.0 + rel_std_scaled)
+    lambda_used = float(lambda_div)
+
+    sim_matrix = embeddings @ embeddings.T
+    sim_matrix = sim_matrix - torch.eye(N, device=device) * 1e9
+    adjusted = torch.zeros_like(rewards)
+    best_sim = torch.zeros(N, device=device)
+    selected = torch.zeros(N, dtype=torch.bool, device=device)
+
+    first = torch.argmax(rewards)
+    selected[first] = True
+    adjusted[first] = rewards[first]
+
+    lam = lambda_used
+    for _ in range(N - 1):
+        best_sim = torch.max(best_sim, sim_matrix[:, selected].max(dim=1).values)
+        scores = lam * rewards - (1.0 - lam) * best_sim
+        scores[selected] = -1e9
+        next_idx = torch.argmax(scores)
+        selected[next_idx] = True
+        adjusted[next_idx] = scores[next_idx]
+
+    # Rescale to match original reward scale
+    adj_mean = adjusted.mean()
+    adj_std = adjusted.std(unbiased=False)
+    if adj_std.item() > eps:
+        adjusted = (adjusted - adj_mean) / (adj_std + eps)
+        adjusted = adjusted * (std + eps) + mean
+
+    return adjusted, lambda_used
+
+
+def mmr_reweight_sigmoid(rewards, embeddings, eps=1e-8):
+    """
+    Adaptive λ via sigmoid(std): λ = σ(std). No hyperparameters.
+    Smooth, scale-invariant adaptation.
+    Returns (adjusted_rewards, lambda_used).
+    """
+    N = rewards.size(0)
+    device = rewards.device
+
+    lambda_div = torch.sigmoid(rewards.std(unbiased=False))
+
+    sim_matrix = embeddings @ embeddings.T
+    sim_matrix = sim_matrix - torch.eye(N, device=device) * 1e9
+    adjusted = torch.zeros_like(rewards)
+    best_sim = torch.zeros(N, device=device)
+    selected = torch.zeros(N, dtype=torch.bool, device=device)
+
+    first = torch.argmax(rewards)
+    selected[first] = True
+    adjusted[first] = rewards[first]
+
+    for _ in range(N - 1):
+        best_sim = torch.max(best_sim, sim_matrix[:, selected].max(dim=1).values)
+        scores = lambda_div * rewards - (1.0 - lambda_div) * best_sim
+        scores[selected] = -1e9
+        next_idx = torch.argmax(scores)
+        selected[next_idx] = True
+        adjusted[next_idx] = scores[next_idx]
+
+    return adjusted, lambda_div.item()
 
 
 class RCGRPOTrainer(GRPOTrainer):
@@ -2214,6 +2329,230 @@ class RCGRPOTrainer(GRPOTrainer):
                 conditioned_inputs.append(conditioned_example)
 
         return super()._generate_and_score_completions(conditioned_inputs)
+
+
+class MMRGRPOTrainer(RCGRPOTrainer):
+    """
+    MMR-GRPO: Reward-conditioned GRPO + diversity-aware reward reweighting.
+
+    Subclasses RCGRPOTrainer. Overrides `_generate_and_score_completions` to
+    apply MMR reweighting to raw rewards BEFORE advantage computation,
+    exactly as specified in Algorithm 1 of the MMR-GRPO paper.
+
+    Embeddings are computed from the model's own hidden states (last layer,
+    mean-pooled over completion tokens) — no external embedding model needed.
+    This is both zero-dependency and policy-adaptive: representations evolve
+    as the model fine-tunes.
+
+    Reference: https://github.com/WeiKangda/MMR-GRPO (ACL 2026 Findings)
+    TRL version targeted: v0.22.2
+    """
+
+    def __init__(self, *args, mmr_config=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mmr_config = mmr_config or {}
+        self._mmr_log = []  # per-step MMR diagnostics
+
+    @staticmethod
+    def _render_prompts(inputs, processing_class):
+        """
+        Replicates TRL's maybe_apply_chat_template without importing from trl.data_utils.
+        Handles both text (standard) and message-list (conversational) prompts.
+        """
+        prompts_text = []
+        for example in inputs:
+            prompt = example["prompt"]
+            if isinstance(prompt, list) and prompt and isinstance(prompt[0], dict) and "role" in prompt[0]:
+                prompts_text.append(processing_class.apply_chat_template(prompt, tokenize=False))
+            else:
+                prompts_text.append(prompt)
+        return prompts_text
+
+    def _generate_and_score_completions(self, inputs):
+        """
+        Full override of TRL's generation-scoring pipeline with MMR insertion.
+
+        Cannot call super() because advantages would be computed from un-adjusted
+        rewards inside the parent. Instead, reproduce the parent's logic with MMR
+        inserted between reward and advantage computation.
+
+        TRL v0.22.2 API calls used:
+        - self._calculate_rewards(inputs, prompts, completions, completion_ids.tolist())
+        - self._move_model_to_vllm()
+        - self.llm.generate(prompts, sampling_params=self.sampling_params, use_tqdm=False)
+        - self._get_per_token_logps(self.model, prompt_completion_ids, prompt_mask, logits_to_keep)
+        """
+        device = self.accelerator.device
+
+        # Step 1: Get prompts
+        prompts = [x["prompt"] for x in inputs]
+        prompts_text = self._render_prompts(inputs, self.processing_class)
+        prompt_inputs = self.processing_class(
+            prompts_text, return_tensors="pt", padding=True,
+            padding_side="left", add_special_tokens=False,
+        )
+        prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+
+        if self.max_prompt_length is not None:
+            prompt_ids = prompt_ids[:, -self.max_prompt_length:]
+            prompt_mask = prompt_mask[:, -self.max_prompt_length:]
+
+        # Step 2: Generate completions
+        if self.args.use_vllm:
+            # vLLM colocate path (trl v0.22.2: self.llm.generate)
+            if self.state.global_step != self._last_loaded_step:
+                self._move_model_to_vllm()
+                self._last_loaded_step = self.state.global_step
+
+            all_prompts_text = gather_object(prompts_text)
+            if self.accelerator.is_main_process:
+                ordered_set_of_prompts = all_prompts_text[::self.num_generations]
+                outputs = self.llm.generate(
+                    ordered_set_of_prompts,
+                    sampling_params=self.sampling_params,
+                    use_tqdm=False,
+                )
+                completion_ids = [
+                    out.token_ids
+                    for completions in outputs
+                    for out in completions.outputs
+                ]
+            else:
+                completion_ids = [None] * len(all_prompts_text)
+
+            completion_ids = broadcast_object_list(completion_ids, from_process=0)
+            process_slice = slice(
+                self.accelerator.process_index * len(prompts),
+                (self.accelerator.process_index + 1) * len(prompts),
+            )
+            completion_ids = completion_ids[process_slice]
+            completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
+            completion_ids = torch.nn.utils.rnn.pad_sequence(
+                completion_ids, batch_first=True,
+                padding_value=self.processing_class.pad_token_id,
+            )
+            prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        else:
+            # Transformers generation path
+            prompt_completion_ids = self.model.generate(
+                prompt_ids, attention_mask=prompt_mask,
+                generation_config=self.generation_config,
+            )
+
+        # Extract completion_ids and completion_mask
+        prompt_length = prompt_ids.size(1)
+        completion_ids = prompt_completion_ids[:, prompt_length:]
+        completion_mask = (completion_ids != self.processing_class.pad_token_id).float()
+
+        # Decode for reward functions
+        completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+
+        # Step 3: Compute raw rewards
+        rewards_per_func = self._calculate_rewards(
+            inputs, prompts, completions, completion_ids.tolist()
+        )
+        rewards = rewards_per_func.sum(dim=1)
+
+        # Save raw rewards for diagnostics
+        raw_rewards_for_log = rewards.detach().clone()
+
+        # Step 3.5: Apply MMR to rewards (THE ADDITION)
+        if self.mmr_config.get("enabled", False):
+            try:
+                # Compute embeddings from model's OWN hidden states
+                with torch.no_grad():
+                    model_outputs = self.model(
+                        input_ids=completion_ids,
+                        attention_mask=completion_mask,
+                        output_hidden_states=True,
+                    )
+                    # Last hidden layer: (B, T, D)
+                    hidden = model_outputs.hidden_states[-1]
+                    # Mean-pool over completion tokens
+                    mask_3d = completion_mask.unsqueeze(-1)
+                    embeddings = (hidden * mask_3d).sum(dim=1) / \
+                        mask_3d.sum(dim=1).clamp(min=1)
+                    # L2 normalize
+                    embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
+
+                # Apply selected MMR variant
+                mode = self.mmr_config.get("mode", "sigmoid")
+                if mode == "original":
+                    rewards = mmr_reweight_original(
+                        rewards, embeddings,
+                        lambda_div=self.mmr_config.get("lambda_div", 0.7),
+                    )
+                elif mode == "std":
+                    rewards, lambda_used = mmr_reweight_std(
+                        rewards, embeddings,
+                        temp=self.mmr_config.get("mmr_std_temp", 2.0),
+                    )
+                else:  # "sigmoid" (default, zero hyperparams)
+                    rewards, lambda_used = mmr_reweight_sigmoid(rewards, embeddings)
+
+                # Log MMR diagnostics
+                with torch.no_grad():
+                    sim_matrix = embeddings @ embeddings.T
+                    mean_sim = sim_matrix.mean().item()
+                self._mmr_log.append({
+                    "step": self.state.global_step,
+                    "mean_similarity": mean_sim,
+                    "mode": mode,
+                    "lambda": lambda_used if mode != "original" \
+                        else self.mmr_config.get("lambda_div", 0.7),
+                    "raw_reward_mean": raw_rewards_for_log.mean().item(),
+                    "mmr_reward_mean": rewards.mean().item(),
+                    "n_completions": len(rewards),
+                })
+            except Exception as exc:
+                print(f"[MMR] WARNING: MMR failed ({exc}), using raw rewards.")
+
+        # Step 4: Compute advantages (from potentially MMR-adjusted rewards)
+        advantages = rewards.view(-1, self.num_generations)
+        advantages = (advantages - advantages.mean(dim=1, keepdim=True)) / \
+                     (advantages.std(dim=1, keepdim=True) + 1e-4)
+        advantages = advantages.view(-1)
+
+        # Step 5: Compute old_per_token_logps (importance sampling)
+        with torch.no_grad():
+            old_per_token_logps = self._get_per_token_logps(
+                self.model, prompt_completion_ids, prompt_mask,
+                prompt_completion_ids.size(1) - prompt_ids.size(1),
+            )
+
+        # Step 6: Compute ref_per_token_logps (KL penalty)
+        ref_per_token_logps = None
+        beta = getattr(self.args, "beta", 0.0)
+        if beta != 0.0:
+            if self.ref_model is not None:
+                ref_model = self.ref_model
+                cm = nullcontext()
+            elif hasattr(self.model, "disable_adapter"):
+                ref_model = self.model
+                cm = self.model.disable_adapter()
+            else:
+                ref_model = self.model
+                cm = nullcontext()
+            with torch.no_grad(), cm:
+                ref_per_token_logps = self._get_per_token_logps(
+                    ref_model, prompt_completion_ids, prompt_mask,
+                    prompt_completion_ids.size(1) - prompt_ids.size(1),
+                )
+
+        # Step 7: Return dict (EXACT format expected by _compute_loss)
+        num_items_in_batch = completion_mask.sum()
+
+        return {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "advantages": advantages,
+            "num_items_in_batch": num_items_in_batch,
+            "old_per_token_logps": old_per_token_logps,
+            "ref_per_token_logps": ref_per_token_logps,
+        }
 
 
 class GTPOTrainer(RCGRPOTrainer):
@@ -3315,7 +3654,7 @@ TRAIN_CONFIG = {
         "max_prompt_length": 7680,
         "max_completion_length": 512,
         "include_all_threshold": 5,
-        "eval_batch_size": 16,
+        "eval_batch_size": 128,
     },
     "grpo": {
         "temperature": 1.0,
@@ -3325,13 +3664,19 @@ TRAIN_CONFIG = {
                                    # reference-free comparison across all
                                    # 4 loss types).  Also changeable at
                                    # runtime via TRAIN_CONFIG.
-        "loss_type": "grpo",     # Options: "grpo", "dapo", "cispo", "gtpo"
+        "loss_type": "grpo",     # Options: "grpo", "dapo", "cispo", "gtpo", "mmr_grpo"
         "epsilon_high": 0.28,     # Upper clip bound (CISPO/DAPO asymmetric clip)
         "mask_truncated_completions": True,
     },
     "gtpo": {
         "entropy_threshold": 0.5,  # δ filter: skip trajectories with mean entropy > this
         "gamma": 0.01,              # γ: entropy regularization coefficient
+    },
+    "mmr": {
+        "enabled": False,          # Master toggle for MMR diversity reweighting
+        "lambda_div": 0.7,         # λ: diversity weight (only used in 'original' mode)
+        "mode": "sigmoid",         # One of: "original", "std", "sigmoid"
+        "mmr_std_temp": 2.0,       # Temperature for std-based adaptive λ (modes "std"/"sigmoid")
     },
     "sft": {
         "output_dir": "outputs/sft_model",
@@ -3839,6 +4184,11 @@ if MODE in ("grpo", "rc_grpo"):
                 entropy_threshold=TRAIN_CONFIG["gtpo"]["entropy_threshold"],
                 gamma=TRAIN_CONFIG["gtpo"]["gamma"],
             )
+        elif loss_type == "mmr_grpo":
+            trainer = MMRGRPOTrainer(
+                **shared_kwargs,
+                mmr_config=TRAIN_CONFIG["mmr"],
+            )
         else:
             trainer = RCGRPOTrainer(**shared_kwargs)
     elif MODE == "grpo":
@@ -3903,6 +4253,9 @@ if MODE in ("grpo", "rc_grpo"):
         ["Epsilon high", TRAIN_CONFIG["grpo"].get("epsilon_high", "N/A")],
         ["KL coefficient (beta)", TRAIN_CONFIG["grpo"]["kl_coefficient"]],
         ["Loss type", TRAIN_CONFIG["grpo"]["loss_type"]],
+        ["MMR enabled", TRAIN_CONFIG["mmr"]["enabled"]],
+        ["MMR mode", TRAIN_CONFIG["mmr"]["mode"]],
+        ["MMR lambda", TRAIN_CONFIG["mmr"]["lambda_div"]],
         ["Mask truncated", TRAIN_CONFIG["grpo"]["mask_truncated_completions"]],
         ["Max prompt length", TRAIN_CONFIG["data"]["max_prompt_length"]],
         ["Max completion length", TRAIN_CONFIG["data"]["max_completion_length"]],
@@ -3968,6 +4321,7 @@ if MODE in ("grpo", "rc_grpo"):
             "mask_truncated_completions": TRAIN_CONFIG["grpo"]["mask_truncated_completions"],
         },
         "gtpo": dict(TRAIN_CONFIG.get("gtpo", {})),
+        "mmr": dict(TRAIN_CONFIG.get("mmr", {})),
         "data": {
             "max_prompt_length": TRAIN_CONFIG["data"]["max_prompt_length"],
             "max_completion_length": TRAIN_CONFIG["data"]["max_completion_length"],
@@ -3992,12 +4346,29 @@ else:
 # vLLM cannot have two fast_inference engines in one process.
 # Delete the training model + clear CUDA cache before loading eval model.
 # Also give eval vLLM full GPU memory (training model is gone).
+# FIX: Properly tear down vLLM engine + reset CUDA allocator to avoid
+# stale graph pool crash (use_count > 0 assertion failure).
 import gc
+import os
+
+# First: explicitly shutdown the vLLM engine before deleting model
+if 'trainer' in dir() and trainer is not None:
+    try:
+        # Put vLLM to sleep and release GPU memory
+        trainer.llm.sleep(sleep=True)
+    except Exception:
+        pass  # trainer may not have llm attribute in all modes
+    del trainer
+
 if 'model' in dir():
     del model
-    gc.collect()
-    torch.cuda.empty_cache()
-    torch.cuda.synchronize()
+
+gc.collect()
+torch.cuda.empty_cache()
+torch.cuda.synchronize()
+
+# Reset allocator to clear stale graph pools
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 ```
 
 ```python
@@ -4019,6 +4390,7 @@ if ENV_NAME == "colab":
 
 ```python
 # ===================== EVALUATION =====================
+os.environ["TORCH_CUDAGRAPH_DISABLE"] = "1"  # FIX: avoid stale CUDA graph pool crash (use_count > 0 assertion)
 os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval: ensures no dual vLLM engines; gpu_memory_utilization is passed explicitly from TRAIN_CONFIG
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
 if Path(test_dataset_path).exists():
@@ -4065,9 +4437,9 @@ if Path(test_dataset_path).exists():
     print(f"\nEvaluation Benchmark \u2014 {MODE}")
     print(tabulate(rows, headers=["Metric", "Value"], tablefmt="grid"))
     generate_report([eval_result])
-    !zip -r {MODE_OUTPUT_DIR}.zip {MODE_OUTPUT_DIR}
     from IPython.display import FileLink
-    FileLink(f"{MODE_OUTPUT_DIR}.zip")
+    FileLink("outputs/evaluation_reports/metrics_summary.csv")
+    FileLink("outputs/evaluation_reports/full_results.json")
 else:
     print("Test dataset not found; skipping evaluation.")
 ```
