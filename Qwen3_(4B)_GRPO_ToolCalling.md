@@ -2263,6 +2263,112 @@ def mmr_reweight_sigmoid(rewards, embeddings, eps=1e-8):
     return adjusted, lambda_div.item()
 
 
+# ─────────────────────────────────────────────────────────────────────
+# AVSPO helper functions (from He et al., ICML 2026, arXiv:2605.21125)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def compute_acr(rewards, G: int, tau: float = 1e-6):
+    """
+    Compute the Advantage Collapse Rate (Definition 4.1).
+
+    ACR = fraction of groups where the within-group reward std < τ.
+    Higher ACR → more groups are collapsed → more virtual samples needed.
+
+    Args:
+        rewards: (B,) tensor of raw rewards, where B = num_groups * G.
+        G: Number of generations per prompt (num_generations).
+        tau: Collapse detection threshold (default: 1e-6, the paper's τ_collapse).
+
+    Returns:
+        (scalar_acr, collapse_flags): ACR as a scalar tensor, and a boolean
+        tensor of shape (num_groups,) indicating which groups are collapsed.
+    """
+    group_rewards = rewards.view(-1, G)                     # (num_groups, G)
+    group_std = group_rewards.std(dim=1, unbiased=False)    # (num_groups,)
+    collapse_flags = group_std < tau                        # (num_groups,) bool
+    num_groups = group_rewards.size(0)
+    acr = collapse_flags.float().mean()                     # scalar
+    return acr, collapse_flags
+
+
+def generate_virtual_samples(
+    K_desired: int,
+    G: int,
+    is_all_correct: bool,
+    max_possible_reward: float,
+    anchor_reward: float = 0.1,
+):
+    """
+    Generate K virtual reward values for a collapsed group (Eq. 9, adapted
+    for continuous rewards).
+
+    K = max(1, min(K_desired, G)) — bounded by G and at least 1.
+    Virtual rewards are generated following the stratified assignment formula:
+    for j in 1..K: r_j = r_anchor_descending * (K+1-j) / (K+1)
+
+    If the group is all-correct (r_obs ≈ max_possible_reward): virtual rewards
+    descend from max_possible_reward (e.g., [3.0*K/(K+1), 3.0*(K-1)/(K+1), ...]).
+
+    If the group is all-incorrect (r_obs ≈ 0): virtual rewards descend from
+    anchor_reward * max_possible_reward (e.g., [0.3*K/(K+1), 0.3*(K-1)/(K+1), ...]).
+
+    Args:
+        K_desired: Desired number of virtual samples (before bounding).
+        G: Number of real samples in the group.
+        is_all_correct: Whether the group's mean reward is above the midpoint.
+        max_possible_reward: Maximum possible reward (e.g., 3.0 for 3 funcs).
+        anchor_reward: Scale for all-incorrect virtual rewards (default: 0.1).
+
+    Returns:
+        (K, virtual_rewards): K (actual count) and a 1D tensor of K virtual rewards.
+    """
+    K = max(1, min(K_desired, G))
+    max_r = max_possible_reward
+    anchor_r = anchor_reward * max_r
+
+    if is_all_correct:
+        # Descend from max_possible_reward
+        top = max_r
+    else:
+        # Descend from anchor_reward * max_possible_reward
+        top = anchor_r
+
+    # Stratified assignment: r_j = top * (K+1-j) / (K+1) for j in 1..K
+    j = torch.arange(1, K + 1, dtype=torch.float32)
+    virtual_rewards = top * (K + 1 - j) / (K + 1)
+    return K, virtual_rewards
+
+
+def adapt_tau(
+    tau_current: float,
+    acr: float,
+    delta_J: float,
+    eta: float = 0.01,
+) -> float:
+    """
+    Adapt the collapse detection threshold τ_adapt (Eq. 10).
+
+    τ_adapt := τ_adapt + η * (ACR - delta_J)
+    where delta_J = current_mean_raw_reward - previous_mean_raw_reward.
+
+    When rewards improve (delta_J > 0), ACR is compared against the
+    improvement — if ACR exceeds improvement, threshold increases
+    (more groups flagged) to inject more virtual samples for harder groups.
+
+    Args:
+        tau_current: Current τ_adapt value.
+        acr: ACR of the current batch (scalar float).
+        delta_J: Change in mean reward from previous batch.
+        eta: Learning rate for adaptation (default: 0.01, paper's η).
+
+    Returns:
+        Updated τ_adapt (clipped to [1e-8, 1.0]).
+    """
+    new_tau = tau_current + eta * (acr - delta_J)
+    return max(1e-8, min(1.0, new_tau))
+
+
 class RCGRPOTrainer(GRPOTrainer):
     """
     TRL GRPOTrainer subclass implementing reward-conditioned rollout
@@ -2694,6 +2800,292 @@ class GTPOTrainer(RCGRPOTrainer):
         loss = (per_token_loss * completion_mask).sum() / normalizer
 
         return loss
+
+
+# ─────────────────────────────────────────────────────────────────────
+# AVSPOTrainer (from He et al., ICML 2026, arXiv:2605.21125)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class AVSPOTrainer(RCGRPOTrainer):
+    """
+    AVSPO: Adaptive Virtual Sample Policy Optimization (He et al., ICML 2026).
+
+    Inherits reward-conditioned rollout from RCGRPOTrainer. Overrides
+    `_generate_and_score_completions` to:
+    1. Inject reward tokens into prompts (same as RCGRPOTrainer, preserving RC)
+    2. Generate completions (NO prompt deduplication — each slot has unique token)
+    3. Compute raw rewards
+    4. Detect collapsed groups (sigma_R < tau) and compute ACR
+    5. When ACR > tau_adapt, inject virtual reward samples into collapsed groups
+    6. Recompute advantages with per-group augmented statistics
+    7. Return the standard dict (same format as parent)
+
+    Virtual samples are synthetic reward values that participate ONLY in
+    normalization statistics (mu, sigma) for advantage computation — they do
+    NOT contribute to the policy gradient (no nabla_theta log pi_theta term
+    exists for them).
+
+    CAUTION: Generation uses NON-deduplicated prompts (all B, not [::G])
+    because reward token injection creates DIFFERENT prompts per slot.
+    Unlike MMRGRPOTrainer, [::G] deduplication would discard G-1 tokens.
+    """
+
+    def __init__(self, *args, avspo_config=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.avspo_config = avspo_config or {}
+        self.tau_adapt = self.avspo_config.get("tau_adapt_initial", 0.5)
+        self._prev_avg_reward = None
+        self._acr_log = []  # per-step ACR diagnostics
+        # max_possible_reward = number of reward functions (each returns [0,1], summed by TRL)
+        self._max_possible_reward = float(len(self.reward_funcs)) if hasattr(self, "reward_funcs") else 3.0
+
+    @staticmethod
+    def _render_prompts(inputs, processing_class):
+        """
+        Replicates TRL's maybe_apply_chat_template without importing from trl.data_utils.
+        Handles both text (standard) and message-list (conversational) prompts.
+        (Same logic as MMRGRPOTrainer._render_prompts.)
+        """
+        prompts_text = []
+        for example in inputs:
+            prompt = example["prompt"]
+            if isinstance(prompt, list) and prompt and isinstance(prompt[0], dict) and "role" in prompt[0]:
+                prompts_text.append(processing_class.apply_chat_template(prompt, tokenize=False))
+            else:
+                prompts_text.append(prompt)
+        return prompts_text
+
+    def _generate_and_score_completions(self, inputs):
+        """
+        Full override of TRL's generation-scoring pipeline with AVSPO insertion.
+
+        Cannot call super()._generate_and_score_completions() because advantages
+        would be computed from un-modified rewards inside the parent. Instead,
+        reproduce the parent's logic with AVSPO inserted between reward and
+        advantage computation.
+
+        TRL v0.22.2 API calls used (same as MMRGRPOTrainer):
+        - self._calculate_rewards(inputs, prompts, completions, completion_ids.tolist())
+        - self._move_model_to_vllm()
+        - self.llm.generate(prompts, sampling_params=self.sampling_params, use_tqdm=False)
+        - self._get_per_token_logps(self.model, prompt_completion_ids, prompt_mask, logits_to_keep)
+        """
+        import math
+
+        device = self.accelerator.device
+        G = self.args.num_generations
+
+        # ── Step 1: Reward token injection (same as RCGRPOTrainer) ────────
+        conditioned_inputs = []
+        for group_start in range(0, len(inputs), G):
+            group = inputs[group_start: group_start + G]
+            reward_tokens = sample_reward_tokens_for_group(
+                len(group), self.high_reward_probability
+            )
+            self._last_reward_tokens.extend(reward_tokens)
+            for example, r_j in zip(group, reward_tokens):
+                conditioned_example = dict(example)
+                prompt_str = conditioned_example["prompt"]
+                conditioned_example["prompt"] = inject_reward_token_into_prompt(
+                    prompt_str, r_j
+                )
+                conditioned_example["_reward_token"] = r_j
+                conditioned_inputs.append(conditioned_example)
+        inputs = conditioned_inputs
+
+        # ── Step 2: Get prompts ──────────────────────────────────────────
+        prompts = [x["prompt"] for x in inputs]
+        prompts_text = self._render_prompts(inputs, self.processing_class)
+        prompt_inputs = self.processing_class(
+            prompts_text, return_tensors="pt", padding=True,
+            padding_side="left", add_special_tokens=False,
+        )
+        prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
+
+        if self.max_prompt_length is not None:
+            prompt_ids = prompt_ids[:, -self.max_prompt_length:]
+            prompt_mask = prompt_mask[:, -self.max_prompt_length:]
+
+        # ── Step 3: Generate completions (NO vLLM deduplication!) ────────
+        # CRITICAL: Unlike MMRGRPOTrainer, we do NOT deduplicate prompts
+        # via all_prompts_text[::self.num_generations]. Each prompt has a
+        # unique reward token — deduplication would discard G-1 tokens.
+        if self.args.use_vllm:
+            if self.state.global_step != self._last_loaded_step:
+                self._move_model_to_vllm()
+                self._last_loaded_step = self.state.global_step
+
+            all_prompts_text = gather_object(prompts_text)
+            if self.accelerator.is_main_process:
+                # Pass ALL B prompts (not [::G]) — each has a unique reward token
+                outputs = self.llm.generate(
+                    all_prompts_text,
+                    sampling_params=self.sampling_params,
+                    use_tqdm=False,
+                )
+                completion_ids = [
+                    out.token_ids
+                    for completions in outputs
+                    for out in completions.outputs
+                ]
+            else:
+                completion_ids = [None] * len(all_prompts_text)
+
+            completion_ids = broadcast_object_list(completion_ids, from_process=0)
+            process_slice = slice(
+                self.accelerator.process_index * len(prompts),
+                (self.accelerator.process_index + 1) * len(prompts),
+            )
+            completion_ids = completion_ids[process_slice]
+            completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
+            completion_ids = torch.nn.utils.rnn.pad_sequence(
+                completion_ids, batch_first=True,
+                padding_value=self.processing_class.pad_token_id,
+            )
+            prompt_completion_ids = torch.cat([prompt_ids, completion_ids], dim=1)
+        else:
+            prompt_completion_ids = self.model.generate(
+                prompt_ids, attention_mask=prompt_mask,
+                generation_config=self.generation_config,
+            )
+
+        # Extract completion_ids and completion_mask
+        prompt_length = prompt_ids.size(1)
+        completion_ids = prompt_completion_ids[:, prompt_length:]
+        completion_mask = (completion_ids != self.processing_class.pad_token_id).float()
+
+        # Decode for reward functions
+        completions = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+
+        # ── Step 4: Compute raw rewards ──────────────────────────────────
+        rewards_per_func = self._calculate_rewards(
+            inputs, prompts, completions, completion_ids.tolist()
+        )
+        rewards = rewards_per_func.sum(dim=1)
+
+        # Save mean raw reward (BEFORE AVSPO) for delta_J tracking
+        current_raw_mean = rewards.mean().item()
+
+        # ── Step 5: Compute advantages with AVSPO virtual samples ────────
+        num_groups = rewards.size(0) // G
+        group_rewards = rewards.view(num_groups, G)
+
+        # Compute ACR
+        tau_collapse = self.avspo_config.get("acr_threshold", 1e-6)
+        acr, collapse_flags = compute_acr(rewards, G, tau=tau_collapse)
+
+        max_r = self._max_possible_reward
+        anchor_r = self.avspo_config.get("anchor_reward", 0.1)
+        alpha = self.avspo_config.get("alpha", 0.5)
+        eps = 1e-8
+
+        advantages = torch.zeros_like(rewards)
+        total_k = 0  # total virtual samples injected (for logging)
+
+        if acr > self.tau_adapt:
+            # Virtual sample injection phase
+            try:
+                for g in range(num_groups):
+                    if collapse_flags[g]:
+                        # Determine direction using reward-scale-aware threshold
+                        is_correct = group_rewards[g].mean() > (max_r / 2.0)
+                        # Compute K from ACR
+                        acr_val = acr.item() if hasattr(acr, "item") else float(acr)
+                        K_desired = max(1, int(math.ceil(G * (acr_val ** alpha))))
+                        K, virtual_rewards = generate_virtual_samples(
+                            K_desired, G, is_correct, max_r,
+                            anchor_reward=anchor_r,
+                        )
+                        total_k += K
+                        # Augmented statistics: G real + K virtual
+                        augmented_pool = torch.cat([
+                            group_rewards[g],
+                            virtual_rewards.to(group_rewards.device),
+                        ])
+                        aug_mean = augmented_pool.mean()
+                        aug_std = augmented_pool.std(unbiased=False) + eps
+                        # Normalize ONLY the G real rewards
+                        advantages[g * G: (g + 1) * G] = \
+                            (group_rewards[g] - aug_mean) / aug_std
+                    else:
+                        # Standard GRPO normalization
+                        grp_mean = group_rewards[g].mean()
+                        grp_std = group_rewards[g].std(unbiased=False) + eps
+                        advantages[g * G: (g + 1) * G] = \
+                            (group_rewards[g] - grp_mean) / grp_std
+            except Exception as exc:
+                print(f"[AVSPO] WARNING: virtual sample injection failed ({exc}), "
+                      f"falling back to standard GRPO advantages.")
+                advantages = rewards.view(-1, G)
+                advantages = (advantages - advantages.mean(dim=1, keepdim=True)) / \
+                             (advantages.std(dim=1, keepdim=True) + eps)
+                advantages = advantages.view(-1)
+        else:
+            # Standard GRPO normalization (no virtual samples needed)
+            advantages = group_rewards - group_rewards.mean(dim=1, keepdim=True)
+            advantages = advantages / (group_rewards.std(dim=1, keepdim=True, unbiased=False) + eps)
+            advantages = advantages.view(-1)
+
+        # ── Step 6: Update tau_adapt ─────────────────────────────────────
+        delta_J = current_raw_mean - (self._prev_avg_reward if self._prev_avg_reward is not None else current_raw_mean)
+        tau_eta = self.avspo_config.get("tau_adapt_eta", 0.01)
+        self.tau_adapt = adapt_tau(self.tau_adapt, float(acr), delta_J, eta=tau_eta)
+        self._prev_avg_reward = current_raw_mean
+
+        # ── Step 7: ACR diagnostics logging ──────────────────────────────
+        acr_log_interval = self.avspo_config.get("acr_log_interval", 10)
+        if self.state.global_step % acr_log_interval == 0:
+            self._acr_log.append({
+                "step": self.state.global_step,
+                "acr": acr.item() if hasattr(acr, "item") else float(acr),
+                "tau_adapt": self.tau_adapt,
+                "n_collapsed_groups": collapse_flags.sum().item() if hasattr(collapse_flags, "sum") else 0,
+                "n_groups": num_groups,
+                "virtual_samples_injected": total_k,
+                "mean_raw_reward": current_raw_mean,
+            })
+
+        # ── Step 8: Compute old_per_token_logps ─────────────────────────
+        with torch.no_grad():
+            old_per_token_logps = self._get_per_token_logps(
+                self.model, prompt_completion_ids, prompt_mask,
+                prompt_completion_ids.size(1) - prompt_ids.size(1),
+            )
+
+        # ── Step 9: Compute ref_per_token_logps (KL penalty) ────────────
+        ref_per_token_logps = None
+        beta = getattr(self.args, "beta", 0.0)
+        if beta != 0.0:
+            if self.ref_model is not None:
+                ref_model = self.ref_model
+                cm = nullcontext()
+            elif hasattr(self.model, "disable_adapter"):
+                ref_model = self.model
+                cm = self.model.disable_adapter()
+            else:
+                ref_model = self.model
+                cm = nullcontext()
+            with torch.no_grad(), cm:
+                ref_per_token_logps = self._get_per_token_logps(
+                    ref_model, prompt_completion_ids, prompt_mask,
+                    prompt_completion_ids.size(1) - prompt_ids.size(1),
+                )
+
+        # ── Step 10: Return dict ────────────────────────────────────────
+        num_items_in_batch = completion_mask.sum()
+
+        return {
+            "prompt_ids": prompt_ids,
+            "prompt_mask": prompt_mask,
+            "completion_ids": completion_ids,
+            "completion_mask": completion_mask,
+            "advantages": advantages,
+            "num_items_in_batch": num_items_in_batch,
+            "old_per_token_logps": old_per_token_logps,
+            "ref_per_token_logps": ref_per_token_logps,
+        }
 
 
 def rc_grpo_reward_func(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
@@ -3664,7 +4056,7 @@ TRAIN_CONFIG = {
                                    # reference-free comparison across all
                                    # 4 loss types).  Also changeable at
                                    # runtime via TRAIN_CONFIG.
-        "loss_type": "grpo",     # Options: "grpo", "dapo", "cispo", "gtpo", "mmr_grpo"
+        "loss_type": "grpo",     # Options: "grpo", "dapo", "cispo", "gtpo", "mmr_grpo", "avspo"
         "epsilon_high": 0.28,     # Upper clip bound (CISPO/DAPO asymmetric clip)
         "mask_truncated_completions": True,
     },
@@ -3677,6 +4069,14 @@ TRAIN_CONFIG = {
         "lambda_div": 0.7,         # λ: diversity weight (only used in 'original' mode)
         "mode": "sigmoid",         # One of: "original", "std", "sigmoid"
         "mmr_std_temp": 2.0,       # Temperature for std-based adaptive λ (modes "std"/"sigmoid")
+    },
+    "avspo": {
+        "acr_threshold": 1e-6,     # τ: collapse detection threshold (Definition 4.1)
+        "alpha": 0.5,              # α: sensitivity for K = max(1, min(G, ceil(G·ACR^α)))
+        "anchor_reward": 0.1,      # r_anchor: virtual reward scale for all-incorrect groups
+        "tau_adapt_initial": 0.5,  # τ_adapt^(0): initial adaptive threshold
+        "tau_adapt_eta": 0.01,     # η: adaptive threshold learning rate
+        "acr_log_interval": 10,    # Logging interval for ACR diagnostics
     },
     "sft": {
         "output_dir": "outputs/sft_model",
@@ -4189,6 +4589,11 @@ if MODE in ("grpo", "rc_grpo"):
                 **shared_kwargs,
                 mmr_config=TRAIN_CONFIG["mmr"],
             )
+        elif loss_type == "avspo":
+            trainer = AVSPOTrainer(
+                **shared_kwargs,
+                avspo_config=TRAIN_CONFIG.get("avspo", {}),
+            )
         else:
             trainer = RCGRPOTrainer(**shared_kwargs)
     elif MODE == "grpo":
@@ -4256,6 +4661,12 @@ if MODE in ("grpo", "rc_grpo"):
         ["MMR enabled", TRAIN_CONFIG["mmr"]["enabled"]],
         ["MMR mode", TRAIN_CONFIG["mmr"]["mode"]],
         ["MMR lambda", TRAIN_CONFIG["mmr"]["lambda_div"]],
+        ["ACR threshold", TRAIN_CONFIG.get("avspo", {}).get("acr_threshold", "N/A")],
+        ["ACR alpha", TRAIN_CONFIG.get("avspo", {}).get("alpha", "N/A")],
+        ["Anchor reward", TRAIN_CONFIG.get("avspo", {}).get("anchor_reward", "N/A")],
+        ["Tau adapt initial", TRAIN_CONFIG.get("avspo", {}).get("tau_adapt_initial", "N/A")],
+        ["Tau adapt eta", TRAIN_CONFIG.get("avspo", {}).get("tau_adapt_eta", "N/A")],
+        ["ACR log interval", TRAIN_CONFIG.get("avspo", {}).get("acr_log_interval", "N/A")],
         ["Mask truncated", TRAIN_CONFIG["grpo"]["mask_truncated_completions"]],
         ["Max prompt length", TRAIN_CONFIG["data"]["max_prompt_length"]],
         ["Max completion length", TRAIN_CONFIG["data"]["max_completion_length"]],
@@ -4322,6 +4733,7 @@ if MODE in ("grpo", "rc_grpo"):
         },
         "gtpo": dict(TRAIN_CONFIG.get("gtpo", {})),
         "mmr": dict(TRAIN_CONFIG.get("mmr", {})),
+        "avspo": dict(TRAIN_CONFIG.get("avspo", {})),
         "data": {
             "max_prompt_length": TRAIN_CONFIG["data"]["max_prompt_length"],
             "max_completion_length": TRAIN_CONFIG["data"]["max_completion_length"],
