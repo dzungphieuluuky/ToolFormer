@@ -2369,6 +2369,117 @@ def adapt_tau(
     return max(1e-8, min(1.0, new_tau))
 
 
+# ─────────────────────────────────────────────────────────────────────
+# GPU resource cleanup helper
+# ─────────────────────────────────────────────────────────────────────
+
+
+def cleanup_training(trainer=None, model=None, tokenizer=None, logger=None):
+    """
+    Release ALL training resources so evaluation starts with clean GPU state.
+
+    vLLM reference: PR #46023 (shutdown + gc.unfreeze + cleanup_dist_env)
+    vLLM issue #6544, #5716: del llm alone is insufficient
+    Unsloth docs: UNSLOTH_VLLM_STANDBY=0 during eval prevents dual engines
+
+    Safe to call multiple times (idempotent via try/except per step).
+    """
+    _log = logger.info if hasattr(logger, 'info') else print
+
+    # ── 1. Shutdown vLLM engine (if trainer has one) ────────────────
+    if trainer is not None and hasattr(trainer, 'llm') and trainer.llm is not None:
+        try:
+            llm = trainer.llm
+            # Try the modern vLLM shutdown() path (added in PR #46023, vLLM ~v0.17+)
+            if hasattr(llm, 'shutdown') and callable(llm.shutdown):
+                llm.shutdown()
+                _log("[cleanup] vLLM LLM.shutdown() completed")
+            else:
+                # Fallback: sleep level=2 (discard weights + KV cache)
+                if hasattr(llm, 'sleep') and callable(llm.sleep):
+                    llm.sleep(level=2)
+                    _log("[cleanup] vLLM sleep(level=2) completed")
+        except Exception as exc:
+            _log(f"[cleanup] WARNING: vLLM shutdown failed: {exc}")
+
+    # ── 2. Destroy vLLM distributed state ────────────────────────────
+    # This is critical — without it, vLLM's internal references keep GPU memory
+    try:
+        from vllm.distributed import destroy_model_parallel, destroy_distributed_environment
+        destroy_model_parallel()
+        destroy_distributed_environment()
+    except ImportError:
+        try:
+            # Older vLLM (<0.12) had this in a different location
+            from vllm.model_executor.parallel_utils.parallel_state import destroy_model_parallel
+            destroy_model_parallel()
+        except ImportError:
+            pass  # Not running distributed or very old vLLM
+    except Exception as exc:
+        _log(f"[cleanup] WARNING: distributed teardown failed: {exc}")
+
+    # ── 3. Destroy torch distributed process group ───────────────────
+    try:
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
+    except Exception as exc:
+        _log(f"[cleanup] WARNING: destroy_process_group failed: {exc}")
+
+    # ── 4. Unfreeze GC heap (vLLM V1 freezes startup objects) ───────
+    # Without this, gc.collect() cannot reclaim vLLM engine objects
+    try:
+        import gc as _gc
+        _gc.unfreeze()
+    except Exception:
+        pass  # Not frozen or old Python
+
+    # ── 5. Delete trainer ────────────────────────────────────────────
+    if trainer is not None:
+        try:
+            # Try to release trainer's internal model reference first
+            if hasattr(trainer, 'model') and trainer.model is not None:
+                if hasattr(trainer.model, '_delete_llm'):
+                    trainer.model._delete_llm()
+        except Exception:
+            pass
+        try:
+            del trainer
+        except Exception:
+            pass
+
+    # ── 6. Delete model and tokenizer ────────────────────────────────
+    if model is not None:
+        try:
+            # For Unsloth's FastLanguageModel, try internal cleanup
+            if hasattr(model, 'delete_llm'):
+                model.delete_llm()
+        except Exception:
+            pass
+        try:
+            del model
+        except Exception:
+            pass
+    if tokenizer is not None:
+        try:
+            del tokenizer
+        except Exception:
+            pass
+
+    # ── 7. Garbage collection ───────────────────────────────────────
+    import gc as _gc2
+    for _ in range(3):  # Triple-collect to clear reference cycles
+        _gc2.collect()
+
+    # ── 8. CUDA cache and allocator reset ────────────────────────────
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    torch.cuda.reset_peak_memory_stats()
+
+    _log(f"[cleanup] GPU memory freed. "
+         f"Allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GiB, "
+         f"Cached: {torch.cuda.memory_reserved() / 1024**3:.2f} GiB")
+
+
 class RCGRPOTrainer(GRPOTrainer):
     """
     TRL GRPOTrainer subclass implementing reward-conditioned rollout
@@ -4288,6 +4399,13 @@ if MODE == "sft":
         json.dump(_sft_hp, f, indent=2, ensure_ascii=False)
 
     print(f"[SFT] Model saved -> {sft_cfg['output_dir']}")
+
+    # ── Free training resources for clean evaluation ──
+    cleanup_training(
+        trainer=trainer if 'trainer' in dir() else None,
+        model=model if 'model' in dir() else None,
+        tokenizer=tokenizer if 'tokenizer' in dir() else None,
+    )
 ```
 
 ```python
@@ -4507,6 +4625,13 @@ if MODE == "rctp_ft":
 
     print(f"[Stage 1] RCTP-FT checkpoint saved -> {rctp_cfg['output_dir']}")
     print("(This checkpoint becomes pi_ref for Stage 2, per Algorithm 1 line 9.)")
+
+    # ── Free training resources for clean evaluation ──
+    cleanup_training(
+        trainer=trainer if 'trainer' in dir() else None,
+        model=model if 'model' in dir() else None,
+        tokenizer=tokenizer if 'tokenizer' in dir() else None,
+    )
 ```
 
 ```python
@@ -4754,32 +4879,16 @@ else:
 ```
 
 ```python
-# ── Free training model to avoid vLLM duplicate-layer crash ──
-# vLLM cannot have two fast_inference engines in one process.
-# Delete the training model + clear CUDA cache before loading eval model.
-# Also give eval vLLM full GPU memory (training model is gone).
-# FIX: Properly tear down vLLM engine + reset CUDA allocator to avoid
-# stale graph pool crash (use_count > 0 assertion failure).
-import gc
+# ── Free training resources for clean evaluation ──
+# Releases: vLLM engine, distributed state, model, LoRA adapter, CUDA cache.
+# Uses the cleanup_training() helper defined in the utilities section above.
+cleanup_training(
+    trainer=trainer if 'trainer' in dir() else None,
+    model=model if 'model' in dir() else None,
+    tokenizer=tokenizer if 'tokenizer' in dir() else None,
+)
+# Reset allocator to clear stale graph pools (applied after cleanup)
 import os
-
-# First: explicitly shutdown the vLLM engine before deleting model
-if 'trainer' in dir() and trainer is not None:
-    try:
-        # Put vLLM to sleep and release GPU memory
-        trainer.llm.sleep(sleep=True)
-    except Exception:
-        pass  # trainer may not have llm attribute in all modes
-    del trainer
-
-if 'model' in dir():
-    del model
-
-gc.collect()
-torch.cuda.empty_cache()
-torch.cuda.synchronize()
-
-# Reset allocator to clear stale graph pools
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 ```
 
@@ -4804,8 +4913,9 @@ if ENV_NAME == "colab":
 # ===================== EVALUATION =====================
 os.environ["TORCH_CUDAGRAPH_DISABLE"] = "1"  # FIX: avoid stale CUDA graph pool crash (use_count > 0 assertion)
 os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval: ensures no dual vLLM engines; gpu_memory_utilization is passed explicitly from TRAIN_CONFIG
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"  # Reset CUDA allocator to clear stale graph pools
+# MODE_OUTPUT_DIR was already set from TRAIN_CONFIG["training"]["output_dir"] above — no override needed
 test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
-MODE_OUTPUT_DIR = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/sft_model/sft_model"
 if Path(test_dataset_path).exists():
     retriever = FunctionRetriever(function_library, method="hybrid")
     sandbox = Sandbox(function_library)
