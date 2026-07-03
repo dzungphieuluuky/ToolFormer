@@ -98,7 +98,7 @@ if ENV_NAME == "kaggle":
     BASE_MODEL_PATH = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
 else:
     BASE_MODEL_PATH = "unsloth/Qwen3-4B-Instruct-2507"
-print(f"Base model: {BASE_MODEL_NAME}")
+print(f"Base model: {BASE_MODEL_PATH}")
 ```
 
 ```python
@@ -2512,6 +2512,19 @@ class RCGRPOTrainer(GRPOTrainer):
         num_added = tokenizer.add_special_tokens({"additional_special_tokens": to_add})
         return num_added
 
+    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
+        """
+        Backward-compat: TRL v0.24.0 renamed _get_per_token_logps to
+        _get_per_token_logps_and_entropies (returns tuple[logps, entropies]).
+        This wrapper provides the old single-tensor interface so all callers
+        (MMRGRPOTrainer, AVSPOTrainer) continue to work unchanged.
+        """
+        logps, _ = self._get_per_token_logps_and_entropies(
+            model, input_ids, attention_mask, logits_to_keep,
+            compute_entropy=False,
+        )
+        return logps
+
     def _generate_and_score_completions(self, inputs):
         """
         Override TRL's per-group prompt construction to inject a freshly
@@ -2569,6 +2582,17 @@ class MMRGRPOTrainer(RCGRPOTrainer):
         super().__init__(*args, **kwargs)
         self.mmr_config = mmr_config or {}
         self._mmr_log = []  # per-step MMR diagnostics
+        # TRL v0.14.0 set self.sampling_params in GRPOTrainer.__init__, but v0.23.1+ removed it.
+        # Reconstruct from individual args attributes (matches build_grpo_config defaults).
+        self.sampling_params = SamplingParams(
+            temperature=self.args.temperature,
+            max_tokens=self.args.max_completion_length,
+            top_p=getattr(self.args, 'top_p', 0.95),
+            min_p=getattr(self.args, 'min_p', 0.05),
+            seed=getattr(self.args, 'seed', 3407),
+            stop=["</tool_call>"],
+            include_stop_str_in_output=True,
+        )
 
     @staticmethod
     def _render_prompts(inputs, processing_class):
@@ -2608,7 +2632,7 @@ class MMRGRPOTrainer(RCGRPOTrainer):
             prompts_text, return_tensors="pt", padding=True,
             padding_side="left", add_special_tokens=False,
         )
-        prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        prompt_inputs = {k: v.to(self.accelerator.device) for k, v in prompt_inputs.items()}
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
 
         if self.max_prompt_length is not None:
@@ -2622,7 +2646,18 @@ class MMRGRPOTrainer(RCGRPOTrainer):
                 self._move_model_to_vllm()
                 self._last_loaded_step = self.state.global_step
 
-            all_prompts_text = gather_object(prompts_text)
+            _world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+            if _world_size > 1:
+                if self.accelerator.is_main_process:
+                    _gather_list = [None] * _world_size
+                    gather_object(prompts_text, object_gather_list=_gather_list)
+                    all_prompts_text = [item for sublist in _gather_list for item in sublist]
+                else:
+                    gather_object(prompts_text)
+                    all_prompts_text = prompts_text
+            else:
+                all_prompts_text = prompts_text
+
             if self.accelerator.is_main_process:
                 ordered_set_of_prompts = all_prompts_text[::self.num_generations]
                 outputs = self.llm.generate(
@@ -2638,12 +2673,13 @@ class MMRGRPOTrainer(RCGRPOTrainer):
             else:
                 completion_ids = [None] * len(all_prompts_text)
 
-            completion_ids = broadcast_object_list(completion_ids, from_process=0)
-            process_slice = slice(
-                self.accelerator.process_index * len(prompts),
-                (self.accelerator.process_index + 1) * len(prompts),
-            )
-            completion_ids = completion_ids[process_slice]
+            if _world_size > 1:
+                completion_ids = broadcast_object_list(completion_ids, from_process=0)
+                process_slice = slice(
+                    self.accelerator.process_index * len(prompts),
+                    (self.accelerator.process_index + 1) * len(prompts),
+                )
+                completion_ids = completion_ids[process_slice]
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
             completion_ids = torch.nn.utils.rnn.pad_sequence(
                 completion_ids, batch_first=True,
@@ -2950,6 +2986,17 @@ class AVSPOTrainer(RCGRPOTrainer):
         self._acr_log = []  # per-step ACR diagnostics
         # max_possible_reward = number of reward functions (each returns [0,1], summed by TRL)
         self._max_possible_reward = float(len(self.reward_funcs)) if hasattr(self, "reward_funcs") else 3.0
+        # TRL v0.14.0 set self.sampling_params in GRPOTrainer.__init__, but v0.23.1+ removed it.
+        # Reconstruct from individual args attributes (matches build_grpo_config defaults).
+        self.sampling_params = SamplingParams(
+            temperature=self.args.temperature,
+            max_tokens=self.args.max_completion_length,
+            top_p=getattr(self.args, 'top_p', 0.95),
+            min_p=getattr(self.args, 'min_p', 0.05),
+            seed=getattr(self.args, 'seed', 3407),
+            stop=["</tool_call>"],
+            include_stop_str_in_output=True,
+        )
 
     @staticmethod
     def _render_prompts(inputs, processing_class):
@@ -3012,7 +3059,7 @@ class AVSPOTrainer(RCGRPOTrainer):
             prompts_text, return_tensors="pt", padding=True,
             padding_side="left", add_special_tokens=False,
         )
-        prompt_inputs = super()._prepare_inputs(prompt_inputs)
+        prompt_inputs = {k: v.to(self.accelerator.device) for k, v in prompt_inputs.items()}
         prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
 
         if self.max_prompt_length is not None:
@@ -3028,7 +3075,18 @@ class AVSPOTrainer(RCGRPOTrainer):
                 self._move_model_to_vllm()
                 self._last_loaded_step = self.state.global_step
 
-            all_prompts_text = gather_object(prompts_text)
+            _world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+            if _world_size > 1:
+                if self.accelerator.is_main_process:
+                    _gather_list = [None] * _world_size
+                    gather_object(prompts_text, object_gather_list=_gather_list)
+                    all_prompts_text = [item for sublist in _gather_list for item in sublist]
+                else:
+                    gather_object(prompts_text)
+                    all_prompts_text = prompts_text
+            else:
+                all_prompts_text = prompts_text
+
             if self.accelerator.is_main_process:
                 # Pass ALL B prompts (not [::G]) — each has a unique reward token
                 outputs = self.llm.generate(
@@ -3044,12 +3102,13 @@ class AVSPOTrainer(RCGRPOTrainer):
             else:
                 completion_ids = [None] * len(all_prompts_text)
 
-            completion_ids = broadcast_object_list(completion_ids, from_process=0)
-            process_slice = slice(
-                self.accelerator.process_index * len(prompts),
-                (self.accelerator.process_index + 1) * len(prompts),
-            )
-            completion_ids = completion_ids[process_slice]
+            if _world_size > 1:
+                completion_ids = broadcast_object_list(completion_ids, from_process=0)
+                process_slice = slice(
+                    self.accelerator.process_index * len(prompts),
+                    (self.accelerator.process_index + 1) * len(prompts),
+                )
+                completion_ids = completion_ids[process_slice]
             completion_ids = [torch.tensor(ids, device=device) for ids in completion_ids]
             completion_ids = torch.nn.utils.rnn.pad_sequence(
                 completion_ids, batch_first=True,
@@ -4115,7 +4174,7 @@ TRAIN_CONFIG = {
     "model": {
         "base_model_path": "unsloth/Qwen3-4B-Instruct-2507",
         "max_seq_length": 8192,
-        "load_in_4bit": True,
+        "load_in_4bit": False,
         "fast_inference": False,
         "gpu_memory_utilization": 0.8,
         "full_finetuning": False,
@@ -4663,7 +4722,7 @@ if MODE in ("grpo", "rc_grpo"):
     # The adapter checkpoint is typically the Stage 1 (RCTP-FT) output.
     # Adjust these to point to your trained checkpoint directories.
     base_model_path = "unsloth/Qwen3-4B-Instruct-2507"
-    adapter_model_path = "outputs/rctp_ft_model"  # Stage 1 (RCTP-FT) output
+    adapter_model_path = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/rctp_ft_model/rctp_ft_model"  # Stage 1 (RCTP-FT) checkpoint
 
     print(f"[Stage 2] Loading base_model_path = {base_model_path}")
     print(f"[Stage 2] Loading adapter_model_path = {adapter_model_path}")
@@ -4674,7 +4733,7 @@ if MODE in ("grpo", "rc_grpo"):
         mode="train",          # keep in train mode for further fine-tuning
         fast_inference=True,
         max_seq_length=TRAIN_CONFIG["model"]["max_seq_length"],
-        load_in_4bit=True,
+        load_in_4bit=TRAIN_CONFIG["model"]["load_in_4bit"],
         env_name=ENV_NAME,
     )
     print("Model and tokenizer loaded.")

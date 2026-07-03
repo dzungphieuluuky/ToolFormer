@@ -13,6 +13,15 @@ Before implementing ANY mechanism, function, or utility from a request, ALWAYS s
 ### Research-Before-Design Rule (ABSOLUTE)
 For any ablation study, hyperparameter design, training configuration change, or algorithmic modification, the first action MUST be a web search for peer-reviewed papers, official documentation, and community benchmarks that inform the design. No code or configuration is written until research findings are synthesized and cited. This ensures all design decisions are grounded in established results (e.g., DAPO, GTPO, FG-ExPO, TRL docs) rather than guesswork.
 
+### Context7 Library API Rule (ABSOLUTE)
+Before using ANY library API function (TRL, Unsloth, transformers, vLLM, etc.),
+ALWAYS use context7 (context7_resolve-library-id + context7_query-docs) to look up
+the exact function signature and return type for the pinned library version. Library
+APIs change frequently across minor versions — do not rely on assumptions from
+earlier versions. The exact Kaggle environment versions are pinned in the Libraries
+table; use context7_query-docs with the matching library version when available, or
+fetch the GitHub source at the tagged version otherwise.
+
 ## Project Overview
 
 Telecom tool-calling RL project: fine-tuning Qwen3-4B for Vietnamese telecom function calling using RC-GRPO (Reward-Conditioned GRPO). Built on Unsloth + TRL. Pure research — **no tests, no linter, no type checker, no CI, no git hooks.**
@@ -57,6 +66,22 @@ GRPO/RC-GRPO auto-select `*_stage2.jsonl` with fallback to original files.
 - `pyproject.toml` declares zero runtime deps — all deps in `requirements.txt` / `uv.lock`, installed by the notebook, not by `pip install -e .`
 - Pre-quantized weights at `unsloth-Qwen3-4B-unsloth-bnb-4bit/`
 - Notebook auto-detects Colab/Kaggle/local and adjusts paths
+
+## Kaggle Libraries (source of truth)
+
+| Library        | Version      |
+|----------------|--------------|
+| unsloth        | 2026.3.17    |
+| unsloth_zoo    | 2026.3.6     |
+| torch          | 2.10.0+cu128 |
+| transformers   | 4.57.6       |
+| trl            | 0.24.0       |
+| peft           | 0.18.1       |
+| vllm           | 0.18.0       |
+| datasets       | 4.3.0        |
+| accelerate     | 1.12.0       |
+| bitsandbytes   | 0.49.2       |
+| flash_attn     | 2.8.3         |
 
 ## Configuration: TRAIN_CONFIG is the Source of Truth
 
