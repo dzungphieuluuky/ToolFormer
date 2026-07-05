@@ -1,0 +1,2 @@
+Model,Func. Selection Acc.,Arg. Accuracy,Schema Validity,Exec. Success Rate,Task Success Rate,Hallucination Rate ↓,Abstention Acc.,Latency (ms) ↓,Cost/Query (USD) ↓
+rctp_ft_rcgrpo_KL0_numgen32,0.6103,0.4841,0.7446,0.7272,0.4841,0.0,0.4662,204.5825,0.0012

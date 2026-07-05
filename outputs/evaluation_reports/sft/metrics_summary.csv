@@ -1,0 +1,2 @@
+Model,Func. Selection Acc.,Arg. Accuracy,Schema Validity,Exec. Success Rate,Task Success Rate,Hallucination Rate ↓,Abstention Acc.,Latency (ms) ↓,Cost/Query (USD) ↓
+rc_grpo,0.2747,0.2424,0.2439,0.2887,0.2424,0.0,0.8797,203.9172,0.0011

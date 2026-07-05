@@ -1,0 +1,176 @@
+[
+  {
+    "label": "Pre-Retrieved",
+    "total_samples": 2075,
+    "num_with_gt": 1942,
+    "num_abstention": 133,
+    "k": {
+      "1": {
+        "precision": 0.3147,
+        "precision_std": 0.4644,
+        "recall": 0.3078,
+        "recall_std": 0.4462,
+        "f1": 0.3112,
+        "hit_rate": 0.3363
+      },
+      "3": {
+        "precision": 0.2167,
+        "precision_std": 0.1672,
+        "recall": 0.6368,
+        "recall_std": 0.4575,
+        "f1": 0.3234,
+        "hit_rate": 0.6818
+      },
+      "5": {
+        "precision": 0.1914,
+        "precision_std": 0.0578,
+        "recall": 0.9398,
+        "recall_std": 0.1655,
+        "f1": 0.3181,
+        "hit_rate": 1.0
+      },
+      "10": {
+        "precision": 0.0957,
+        "precision_std": 0.0289,
+        "recall": 0.9398,
+        "recall_std": 0.1655,
+        "f1": 0.1737,
+        "hit_rate": 1.0
+      },
+      "20": {
+        "precision": 0.0479,
+        "precision_std": 0.0144,
+        "recall": 0.9398,
+        "recall_std": 0.1655,
+        "f1": 0.0911,
+        "hit_rate": 1.0
+      },
+      "31": {
+        "precision": 0.0309,
+        "precision_std": 0.0093,
+        "recall": 0.9398,
+        "recall_std": 0.1655,
+        "f1": 0.0598,
+        "hit_rate": 1.0
+      }
+    },
+    "mrr": 0.5519395811877789,
+    "time_seconds": 0.0
+  },
+  {
+    "label": "BM25",
+    "total_samples": 2075,
+    "num_with_gt": 1942,
+    "num_abstention": 133,
+    "k": {
+      "1": {
+        "precision": 0.5243,
+        "precision_std": 0.4994,
+        "recall": 0.5215,
+        "recall_std": 0.4802,
+        "f1": 0.5229,
+        "hit_rate": 0.5602
+      },
+      "3": {
+        "precision": 0.2557,
+        "precision_std": 0.1708,
+        "recall": 0.7403,
+        "recall_std": 0.4183,
+        "f1": 0.3802,
+        "hit_rate": 0.7755
+      },
+      "5": {
+        "precision": 0.1701,
+        "precision_std": 0.0976,
+        "recall": 0.8173,
+        "recall_std": 0.3645,
+        "f1": 0.2816,
+        "hit_rate": 0.8507
+      },
+      "10": {
+        "precision": 0.0944,
+        "precision_std": 0.0475,
+        "recall": 0.8954,
+        "recall_std": 0.2858,
+        "f1": 0.1707,
+        "hit_rate": 0.9192
+      },
+      "20": {
+        "precision": 0.052,
+        "precision_std": 0.0232,
+        "recall": 0.9727,
+        "recall_std": 0.1466,
+        "f1": 0.0986,
+        "hit_rate": 0.9825
+      },
+      "31": {
+        "precision": 0.0347,
+        "precision_std": 0.0152,
+        "recall": 1.0,
+        "recall_std": 0.0,
+        "f1": 0.0671,
+        "hit_rate": 1.0
+      }
+    },
+    "mrr": 0.687102931393426,
+    "time_seconds": 0.46
+  },
+  {
+    "label": "HYBRID",
+    "total_samples": 2075,
+    "num_with_gt": 1942,
+    "num_abstention": 133,
+    "k": {
+      "1": {
+        "precision": 0.5933,
+        "precision_std": 0.4912,
+        "recall": 0.593,
+        "recall_std": 0.4707,
+        "f1": 0.5931,
+        "hit_rate": 0.6339
+      },
+      "3": {
+        "precision": 0.2716,
+        "precision_std": 0.1568,
+        "recall": 0.7938,
+        "recall_std": 0.3798,
+        "f1": 0.4048,
+        "hit_rate": 0.8332
+      },
+      "5": {
+        "precision": 0.1765,
+        "precision_std": 0.092,
+        "recall": 0.8514,
+        "recall_std": 0.331,
+        "f1": 0.2924,
+        "hit_rate": 0.8862
+      },
+      "10": {
+        "precision": 0.0975,
+        "precision_std": 0.0445,
+        "recall": 0.9301,
+        "recall_std": 0.2317,
+        "f1": 0.1766,
+        "hit_rate": 0.9531
+      },
+      "20": {
+        "precision": 0.0525,
+        "precision_std": 0.0226,
+        "recall": 0.9827,
+        "recall_std": 0.1064,
+        "f1": 0.0996,
+        "hit_rate": 0.9938
+      },
+      "31": {
+        "precision": 0.0347,
+        "precision_std": 0.0152,
+        "recall": 1.0,
+        "recall_std": 0.0,
+        "f1": 0.0671,
+        "hit_rate": 1.0
+      }
+    },
+    "mrr": 0.7475137459015746,
+    "time_seconds": 319.96
+  }
+]

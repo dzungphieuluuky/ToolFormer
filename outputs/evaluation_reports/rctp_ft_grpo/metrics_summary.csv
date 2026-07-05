@@ -1,0 +1,2 @@
+Model,Func. Selection Acc.,Arg. Accuracy,Schema Validity,Exec. Success Rate,Task Success Rate,Hallucination Rate ↓,Abstention Acc.,Latency (ms) ↓,Cost/Query (USD) ↓
+rctp_ft_grpo_model,0.3906,0.3351,0.3976,0.428,0.3351,0.0,0.7669,174.68,0.0011

@@ -1,0 +1,2 @@
+Model,Func. Selection Acc.,Arg. Accuracy,Schema Validity,Exec. Success Rate,Task Success Rate,Hallucination Rate ↓,Abstention Acc.,Latency (ms) ↓,Cost/Query (USD) ↓
+rctp_ft_rcgrpo_KL0_numgen16_cispo_highrewardprob0.2,0.6151,0.489,0.7494,0.7287,0.489,0.0005,0.4511,194.1746,0.0012
