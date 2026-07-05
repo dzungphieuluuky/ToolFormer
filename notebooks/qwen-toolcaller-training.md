@@ -388,15 +388,7 @@ print("All imports successful.")
 ```python _uuid="5847f07a-8e86-4c76-ace8-75bb53b92df0" _cell_guid="32c65812-4fef-4ca2-bd25-52f051b6ddb1" jupyter={"outputs_hidden": false}
 # ===================== logging_utils.py =====================
 def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
-    """Create a RichHandler-based logger.
-
-    Args:
-        name: Logger name.
-        level: Logging level (default: INFO).
-
-    Returns:
-        Configured logger instance.
-    """
+    """Get RichHandler logger. name: Logger name. level: Log level (default: INFO)."""
     logger = logging.getLogger(name)
     if not logger.handlers:
         handler = RichHandler(rich_tracebacks=True, show_time=True, markup=True)
@@ -419,19 +411,7 @@ def generate_response(
     temperature: float = 0.6,
     do_sample: bool = True,
 ) -> str:
-    """Generate a response from the model for a single prompt.
-
-    Args:
-        model: The loaded model.
-        tokenizer: The model tokenizer.
-        prompt: Input prompt string.
-        max_new_tokens: Maximum tokens to generate (default: 512).
-        temperature: Sampling temperature (default: 0.6).
-        do_sample: Whether to use sampling (default: True).
-
-    Returns:
-        Decoded string of generated tokens.
-    """
+    """Generate model response for single prompt. Returns decoded tokens."""
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
     with torch.inference_mode():
         output = model.generate(
@@ -457,15 +437,7 @@ from typing import Any, Callable
 
 
 def _default_mock(function_name: str, arguments: dict) -> dict:
-    """Create a default mock result for a tool call.
-
-    Args:
-        function_name: Name of the mocked function.
-        arguments: Arguments passed to the function.
-
-    Returns:
-        Dict with status, function name and placeholder result.
-    """
+    """Default mock result for tool call. Returns {status, function, result}."""
     return {
         "status": "success",
         "function": function_name,
@@ -474,10 +446,7 @@ def _default_mock(function_name: str, arguments: dict) -> dict:
 
 
 class Sandbox:
-    """
-    Executes (mock) tool calls and tracks cumulative environment state
-    so that R_state can compare final_state vs gold_state.
-    """
+    """Mock tool executor tracking cumulative env state for R_state comparison."""
 
     def __init__(
         self,
@@ -485,13 +454,7 @@ class Sandbox:
         mocks: dict[str, Callable] | None = None,
         timeout_seconds: float = 5.0,
     ):
-        """Initialize Sandbox with function library and optional mocks.
-
-        Args:
-            function_library: Dict mapping function names to schemas.
-            mocks: Optional dict of mock callables per function name.
-            timeout_seconds: Timeout for mock execution in seconds.
-        """
+        """function_library: name→schema map. mocks: optional mock callables. timeout: mock exec timeout (s)."""
         self.library = function_library
         self.mocks = mocks or {}
         self.timeout = timeout_seconds
@@ -500,14 +463,7 @@ class Sandbox:
 
     # ── public API ───────────────────────────────────────────────────────
     def execute(self, call_input: str | dict | None) -> bool:
-        """Execute a single tool call.
-
-        Args:
-            call_input: A tool call as a string, dict, or None.
-
-        Returns:
-            True if the call succeeded, False otherwise.
-        """
+        """Execute single tool call. Returns True on success."""
         if call_input is None:
             return False
         call = self._resolve_call(call_input)
@@ -516,59 +472,40 @@ class Sandbox:
         return self._run_call(call)
 
     def execute_all(self, response: str) -> list[bool]:
-        """Parse and execute all tool calls from a model response.
-
-        Args:
-            response: Model output containing tool calls.
-
-        Returns:
-            List of booleans indicating success per call.
-        """
+        """Parse and execute all tool calls from response. Returns per-call success flags."""
         # FIXED: extract_all_calls is defined locally in this file (base_reward.py section)
         calls = extract_all_calls(response)
         return [self._run_call(c) for c in calls]
 
     def get_call_log(self) -> list[dict]:
-        """Return a copy of the call log."""
+        """Copy of call log."""
         return self._call_log.copy()
 
     def get_state(self) -> dict:
-        """Return the cumulative environment state snapshot (for R_state)."""
+        """Cumulative env state snapshot.
+        
+        Used by R_state to compare final_state vs gold_state."""
         return self._state.copy()
 
     def clear(self) -> None:
-        """Reset both call log and environment state."""
+        """Reset call log and env state."""
         self._call_log.clear()
         self._state.clear()
 
     def clear_log(self) -> None:
-        """Clear both call log and environment state (delegates to clear())."""
+        """Alias for clear()."""
         self.clear()
 
     # ── internals ────────────────────────────────────────────────────────
     def _resolve_call(self, call_input: str | dict) -> dict | None:
-        """Parse call input into a standard dict format.
-
-        Args:
-            call_input: Raw call input as string or dict.
-
-        Returns:
-            Parsed call dict, or None if parsing failed.
-        """
+        """Parse call input into standard dict. Returns None if parse failed."""
         if isinstance(call_input, dict):
             return call_input
         # FIXED: extract_call is defined locally in this file (base_reward.py section)
         return extract_call(call_input)
 
     def _run_call(self, call: dict) -> bool:
-        """Execute a parsed call: validate schema, run mock, log result.
-
-        Args:
-            call: Parsed call dict with "function" and "arguments" keys.
-
-        Returns:
-            True if the call succeeded, False otherwise.
-        """
+        """Execute parsed call: validate schema, run mock, log result. Returns True on success."""
         func_name = call.get("function")
         arguments = call.get("arguments", {})
         if not func_name:
@@ -596,18 +533,7 @@ class Sandbox:
             return False
 
     def _validate_args(self, func_name: str, arguments: dict, schema: dict) -> bool:
-        """Validate arguments against function schema.
-
-        Checks required parameters and constraints (min, max, enum).
-
-        Args:
-            func_name: Function name for error logging.
-            arguments: Arguments to validate.
-            schema: Function schema dict with parameters and constraints.
-
-        Returns:
-            True if arguments pass validation, False otherwise.
-        """
+        """Validate required params + constraints (min, max, enum). Returns True if valid."""
         params = schema.get("parameters", {})
         constraints = schema.get("constraints", {})
         for pname, pinfo in params.items():
@@ -633,14 +559,7 @@ class Sandbox:
         return True
 
     def _log(self, func_name: str, arguments: dict, status: str, result: Any) -> None:
-        """Append an entry to the call log.
-
-        Args:
-            func_name: Name of the called function.
-            arguments: Arguments passed to the function.
-            status: Outcome status ("success" or "error").
-            result: The call result or error message.
-        """
+        """Append entry to call log (function, arguments, status, result)."""
         self._call_log.append({
             "function": func_name,
             "arguments": arguments,
@@ -654,10 +573,8 @@ class Sandbox:
 """
 Vietnamese text normalization for cross-script matching.
 
-Handles the core problem:
-  Query (diacritics):  "Hà Nội"  "Đà Nẵng"  "tốc độ"
-  Catalog (stripped):  "Ha Noi"  "Da Nang"   "toc do"
-  Codes:               "HNI"     "DNG"        --
+Core problem:
+  Query (diacritics):  "Hà Nội"    Catalog (stripped):  "Ha Noi"    Codes:  "HNI"
 """
 
 import re
@@ -709,19 +626,8 @@ _VN_STOPWORDS = frozenset({
 
 @lru_cache(maxsize=8192)
 def normalize_vietnamese(text: str) -> str:
-    """
-    Full normalization pipeline:
-      1. Lowercase
-      2. NFKD decomposition (strips combining diacritics: ắ → a)
-      3. Vietnamese-specific char map (đ → d)
-      4. Remove remaining combining characters
-      5. Collapse whitespace
-      6. Strip
-
-    "Hà Nội"   → "ha noi"
-    "Đà Nẵng"  → "da nang"
-    "Thành phố Hồ Chí Minh" → "thanh pho ho chi minh"
-    """
+    """Lowercase → VN char map → NFKD → strip diacritics → collapse space.
+    "Hà Nội" → "ha noi", "Đà Nẵng" → "da nang"."""
     text = text.lower()
 
     # Apply Vietnamese-specific mappings BEFORE NFKD
@@ -746,10 +652,7 @@ def normalize_vietnamese(text: str) -> str:
 
 
 def expand_synonyms(text_normalized: str) -> str:
-    """
-    Expand Vietnamese abbreviations in already-normalized text.
-    "tp hcm" → "thanh pho ho chi minh"
-    """
+    """Expand VN abbreviations in normalized text. "tp hcm" → "thanh pho ho chi minh"."""
     tokens = text_normalized.split()
     expanded = []
     for t in tokens:
@@ -761,9 +664,7 @@ def expand_synonyms(text_normalized: str) -> str:
 
 
 def tokenize_meaningful(text_normalized: str, min_len: int = 2) -> set[str]:
-    """
-    Extract meaningful tokens (skip stopwords and very short tokens).
-    """
+    """Extract tokens, skip stopwords + short tokens."""
     tokens = text_normalized.split()
     return {
         t for t in tokens
@@ -825,7 +726,7 @@ class CatalogEntry:
         self._label_tokens = tokenize_meaningful(all_text_expanded)
 
     def add_alias(self, alias: str) -> None:
-        """Add an extra alias (e.g., from a hand-curated alias table)."""
+        """Register extra alias for this entry."""
         norm = normalize_vietnamese(alias)
         self._aliases.append(norm)
         self._label_tokens = self._label_tokens | tokenize_meaningful(norm)
@@ -842,16 +743,7 @@ class ValueMatch:
 
 
 class ValueCatalog:
-    """
-    Manages argument value lookup for one parameter type.
-
-    Matching priority:
-      1. Exact code match in query (score=1.0)
-      2. Full normalized label match in query (score=0.95)
-      3. Alias match (score=0.90)
-      4. Token overlap (score=0.3–0.7 based on overlap fraction)
-      5. Character n-gram similarity for short codes (score=0.2–0.5)
-    """
+    """Argument value lookup for one parameter. Code→normalized→alias→token→ngram match."""
 
     def __init__(
         self,
@@ -889,9 +781,7 @@ class ValueCatalog:
         query_tokens: set[str],
         top_k: int = 3,
     ) -> list[ValueMatch]:
-        """
-        Score all entries against the query. Returns top-k matches.
-        """
+        """Score all entries against query. Returns top-k."""
         scored: list[tuple[float, CatalogEntry]] = []
 
         for entry in self.entries:
@@ -990,30 +880,7 @@ def load_catalog_from_json(
     json_path: str,
     aliases_path: str | None = None,
 ) -> dict[str, ValueCatalog]:
-    """
-    Load argument value catalogs from JSON.
-
-    Expected format:
-    {
-      "location_code": [
-        {"code": "HNI", "label": "Hà Nội", "group": "province", "alt_label": "Ha Noi"},
-        ...
-      ],
-      "tech_type": [
-        {"code": "5G", "label": "5G NR", "group": "technology"},
-        ...
-      ]
-    }
-
-    Optional aliases file (JSON):
-    {
-      "location_code": {
-        "Sài Gòn": "HCM",
-        "TPHCM": "HCM",
-        "Thủ đô": "HNI"
-      }
-    }
-    """
+    """Load value catalogs from JSON. Optional aliases file augments lookup."""
     with open(json_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
@@ -1046,11 +913,7 @@ def load_catalog_from_json(
 ```python _uuid="3d29ca0e-e254-47bc-9bac-fb4af599dbce" _cell_guid="bea961b6-bcd6-4bf5-9a39-991af5737d85" jupyter={"outputs_hidden": false}
 # ===================== smart_retriever.py =====================
 """
-Smart retriever that combines:
-  - Function retrieval: BM25 + optional lightweight embedding (hybrid)
-  - Value retrieval: deterministic normalized lookup (NO embeddings)
-
-Handles Vietnamese diacritics ↔ ASCII/code mapping correctly.
+Function retriever (BM25/hybrid) + value retriever (deterministic lookup). VN diacritics-aware.
 """
 
 from __future__ import annotations
@@ -1111,7 +974,7 @@ _DATE_PATTERNS = [
 
 
 def _last_day(year: int, month: int) -> str:
-    """Last day of a given month."""
+    """Last day of month."""
     import calendar
     last = calendar.monthrange(year, month)[1]
     return f"{year}-{month:02d}-{last:02d}"
@@ -1124,10 +987,7 @@ def _quarter_range(q: int, year: int) -> tuple[str, str]:
 
 
 def extract_dates(query: str) -> dict[str, str]:
-    """
-    Extract from_date and to_date from Vietnamese query.
-    Returns dict with 'from_date' and/or 'to_date' keys.
-    """
+    """Extract from_date/to_date from VN query."""
     query_lower = query.lower()
     for pattern, extractor in _DATE_PATTERNS:
         for match in re.finditer(pattern, query_lower):
@@ -1162,7 +1022,7 @@ _DATA_LEVEL_PATTERNS = [
 
 
 def extract_data_level(query: str) -> str | None:
-    """Extract aggregation level from Vietnamese query."""
+    """Extract aggregation level from VN query."""
     query_norm = normalize_vietnamese(query)
     for pattern, level in _DATA_LEVEL_PATTERNS:
         if re.search(pattern, query_norm):
@@ -1175,16 +1035,7 @@ def extract_data_level(query: str) -> str | None:
 # ─────────────────────────────────────────────────────────────────────
 
 class FunctionRetriever:
-    """
-    BM25-based function retrieval with Vietnamese normalization.
-
-    For most telecom function libraries (10–200 functions), BM25 with
-    proper normalization is sufficient. Embeddings add marginal value
-    but significant latency.
-
-    If you need embeddings, pass method="hybrid" and an encoder_model
-    that handles Vietnamese (e.g., "keepitreal/vietnamese-sbert").
-    """
+    """BM25 function retrieval with VN normalization. Optional hybrid mode adds embedding."""
 
     def __init__(
         self,
@@ -1220,7 +1071,7 @@ class FunctionRetriever:
 
     @staticmethod
     def _build_search_text(name: str, schema: dict) -> str:
-        """Build a rich searchable string from function schema."""
+        """Build searchable string from function schema."""
         parts = [name]
         parts.append(schema.get("description", ""))
         for pname, pinfo in schema.get("parameters", {}).items():
@@ -1280,16 +1131,7 @@ class FunctionRetriever:
 # ─────────────────────────────────────────────────────────────────────
 
 class ArgumentValueRetriever:
-    """
-    Retrieves relevant argument values using deterministic normalized
-    string matching. NO embedding model needed.
-
-    Strategy:
-      1. If param has ≤ include_all_threshold values → return ALL
-      2. Otherwise → normalized alias lookup + token overlap scoring
-      3. Dates → regex extraction
-      4. data_level → regex extraction
-    """
+    """Deterministic argument value lookup. No embedding needed. Small enums → all, large → scored."""
 
     def __init__(
         self,
@@ -1308,7 +1150,7 @@ class ArgumentValueRetriever:
             self._param_to_catalog[key] = key
 
     def add_param_mapping(self, param_name: str, catalog_key: str) -> None:
-        """Explicitly map a schema parameter name to a catalog key."""
+        """Map schema param to catalog key."""
         self._param_to_catalog[param_name] = catalog_key
 
     def retrieve_for_function(
@@ -1316,9 +1158,7 @@ class ArgumentValueRetriever:
         query: str,
         function_schema: dict,
     ) -> dict[str, list[ValueMatch]]:
-        """
-        For each parameter in the function schema, find matching values.
-        """
+        """Find matching values for each param in function schema."""
         result: dict[str, list[ValueMatch]] = {}
         params = function_schema.get("parameters", {})
 
@@ -1424,7 +1264,7 @@ class ArgumentValueRetriever:
         return combined
 
     def _get_catalog(self, param_name: str) -> ValueCatalog | None:
-        """Resolve param name to catalog, with fallback matching."""
+        """Resolve param name to catalog via direct/suffix/prefix match."""
         # Direct match
         catalog_key = self._param_to_catalog.get(param_name)
         if catalog_key and catalog_key in self.catalogs:
@@ -1465,17 +1305,11 @@ class RetrievalResult:
 
 
 class TelcoRetriever:
-    """
-    Combined function + argument value retriever.
+    """Combined function + argument value retriever.
 
     Usage:
-        catalogs = load_catalog_from_json("data/argument_values.json",
-                                          "data/aliases.json")
-        retriever = TelcoRetriever.build(
-            function_library=lib,
-            catalogs=catalogs,
-            method="bm25",
-        )
+        catalogs = load_catalog_from_json("data/argument_values.json", "data/aliases.json")
+        retriever = TelcoRetriever.build(function_library=lib, catalogs=catalogs)
         result = retriever.retrieve(query, function_library)
     """
 
@@ -1578,7 +1412,7 @@ from typing import Any
 # ─────────────────────────────────────────────────────────────────────
 # ===== ADD THIS =====
 def normalize_ground_truth(gt: dict) -> dict:
-    """Normalise a ground_truth dict to a consistent schema."""
+    """Normalise ground_truth to consistent schema."""
     if not isinstance(gt, dict):
         return {}
     calls = gt.get("calls", [])
@@ -1597,7 +1431,7 @@ def normalize_ground_truth(gt: dict) -> dict:
     }
 # ===== END ADD =====
 def _parse_gt(gt) -> dict:
-    """Coerce ground_truth (JSON string or dict) into a dict and normalize."""
+    """Coerce ground_truth (JSON string or dict) into normalized dict."""
     if isinstance(gt, dict):
         return normalize_ground_truth(gt)
     if isinstance(gt, str):
@@ -1617,7 +1451,7 @@ _REASON_RE = _REASONING_RE
 
 
 def extract_call(response: str) -> dict | None:
-    """Extract the first <tool_call>...</tool_call> JSON from a response."""
+    """Extract first <tool_call>...</tool_call> JSON from response."""
     match = _TOOL_CALL_RE.search(response)
     if not match:
         # legacy fallback
@@ -1642,7 +1476,7 @@ def extract_call(response: str) -> dict | None:
 
 
 def extract_all_calls(response: str) -> list[dict]:
-    """Extract ALL <tool_call> JSON blocks from a response (for sequential workflows)."""
+    """Extract ALL <tool_call> JSON blocks from response (sequential workflows)."""
     calls = []
     for m in _TOOL_CALL_RE.finditer(response):
         raw = m.group(1).strip()
@@ -1707,12 +1541,7 @@ def make_reward_function(
     sandbox_cls=None,
     weights: dict | None = None,
 ):
-    """
-    Build a reward callable(response_text) -> float for one training sample.
-
-    Supports both single_call and sequential workflows via normalize_ground_truth.
-    Returns 1.0 for correct abstention (no gold calls, no agent calls).
-    """
+    """Build reward callable(response_text) -> float for one sample. Supports single + sequential calls."""
     gt = normalize_ground_truth(ground_truth)
     w = weights or {
         "format": 0.10,
@@ -1783,22 +1612,7 @@ def make_reward_function(
 
 
 def make_binary_reward_function(ground_truth: dict, function_library: dict):
-    """
-    Build a binary reward callable(response_text) -> int (0 or 1).
-
-    Wraps the continuous ``compute_action_coverage_reward`` and thresholds
-    at >= 1.0 for backward compatibility with code that expects a binary
-    signal.  1.0 means every gold call and every parameter was matched
-    exactly — the same semantics as the old all-or-nothing check.
-
-    Args:
-        ground_truth: Ground-truth dict with a ``"calls"`` key.
-        function_library: Dict mapping function names to schemas (unused but
-                          kept for API compatibility).
-
-    Returns:
-        A callable ``(response_text: str) -> int`` that returns 0 or 1.
-    """
+    """Build binary reward (0/1). Thresholds continuous reward at >= 1.0 (perfect match)."""
     gt = normalize_ground_truth(ground_truth)
     gold_calls = [
         {"function": c["function"], "arguments": c.get("arguments", {})}
@@ -1823,23 +1637,7 @@ def make_binary_reward_function(ground_truth: dict, function_library: dict):
 # ─────────────────────────────────────────────────────────────────────
 
 def function_reward(completions: list[str], ground_truth: list, **kwargs) -> list[float]:
-    """F1-based function selection reward, continuous in [0, 1].
-
-    Computes the F1 score between the set of gold function names and the set of
-    agent-called function names.  This penalises both missing calls (low recall)
-    AND spurious extra calls (low precision), unlike the previous binary check
-    which only enforced recall.
-
-    Args:
-        completions: List of model response strings.
-        ground_truth: List of ground-truth dicts (or JSON strings), each with a
-                      ``"calls"`` key containing ``{"function": ..., "arguments": ...}``.
-        **kwargs: Additional keyword arguments (ignored; for TRL compatibility).
-
-    Returns:
-        List of float scores in [0.0, 1.0].  A correct abstention (no gold calls
-        and no agent calls) yields 1.0.
-    """
+    """F1-based function selection reward, continuous [0, 1]. Correct abstention = 1.0."""
     rewards = []
     for c, gt_raw in zip(completions, ground_truth):
         gt = _parse_gt(gt_raw)
@@ -1873,23 +1671,7 @@ def function_reward(completions: list[str], ground_truth: list, **kwargs) -> lis
 
 
 def format_reward(completions: list[str], **kwargs) -> list[float]:
-    """Multi-component format reward, continuous in [0, 1].
-
-    Composed of three equally-weighted sub-checks to close trivial-hack
-    vectors (e.g. inserting a bare ``<tool_call>`` token with no real call):
-
-      1. Tag presence (0.3):  whether ``<tool_call>`` and ``</tool_call>`` tags appear.
-      2. JSON parseability (0.3): whether extracted tool calls are valid JSON.
-      3. Clean output (0.4): whether the response contains no text outside
-         ``<tool_call>`` / ``<reasoning>`` blocks (i.e. no "garbage" tokens).
-
-    Args:
-        completions: List of model response strings.
-        **kwargs: Additional keyword arguments (ignored; for TRL compatibility).
-
-    Returns:
-        List of float scores in [0.0, 1.0].
-    """
+    """Multi-component format reward [0,1]: tag presence + JSON parseability + clean output (0.3/0.3/0.4)."""
     rewards = []
     for c in completions:
         # 1. Tag presence (0.3)
@@ -2021,24 +1803,9 @@ def compute_action_coverage_reward(
     agent_tool_calls: List[Dict],
     gold_tool_calls: List[Dict],
 ) -> float:
-    """Continuous action-coverage reward in [0, 1] based on per-parameter accuracy.
-
-    For each gold call, finds the matching agent call by function name and scores
-    the fraction of gold parameters that the agent correctly predicts (with type
-    coercion).  Returns the mean across all gold calls.
-
-    Args:
-        agent_tool_calls: List of agent-produced call dicts, each with
-                          ``"function"`` and ``"arguments"`` keys.
-        gold_tool_calls: List of ground-truth call dicts.
-
-    Returns:
-        Float in [0.0, 1.0].  1.0 when every gold call is fully covered (all
-        parameters match exactly).  0.0 when no gold call is matched at all.
-    """
-
+    """Continuous action-coverage reward [0,1] per-parameter accuracy. Mean across gold calls."""
     def _param_match_score(agent_args: dict, gold_args: dict) -> float:
-        """Fraction of gold parameters matched (with type coercion and strip)."""
+        """Fraction of gold params matched (type-coerced, stripped)."""
         if not gold_args:
             return 1.0
         matched = 0
@@ -2134,10 +1901,7 @@ def inject_reward_token_into_messages(
     prompt_messages: List[Dict],
     reward_token: str,
 ) -> List[Dict]:
-    """
-    Inject `[Reward Goal: <token>]` into the system message only
-    (Appendix B), matching RCTP-FT training exactly.
-    """
+    """Inject `[Reward Goal: <token>]` into system message only (Appendix B)."""
     out = []
     injected = False
     for msg in prompt_messages:
@@ -2155,12 +1919,7 @@ def inject_reward_token_into_messages(
 
 
 def mmr_reweight_original(rewards, embeddings, lambda_div=0.7):
-    """
-    Original MMR: greedy selection with fixed λ.
-    rewards: (B,)
-    embeddings: (B, D), L2-normalized
-    Returns adjusted rewards in original order.
-    """
+    """MMR greedy selection with fixed λ. rewards: (B,), embeddings: (B, D). Returns adjusted rewards."""
     N = rewards.size(0)
     device = rewards.device
     sim_matrix = embeddings @ embeddings.T
@@ -2186,11 +1945,7 @@ def mmr_reweight_original(rewards, embeddings, lambda_div=0.7):
 
 
 def mmr_reweight_std(rewards, embeddings, temp=2.0, eps=1e-8):
-    """
-    Adaptive λ from reward std: λ = rel_std_scaled / (1 + rel_std_scaled).
-    Higher std → more diversity emphasis.
-    Returns (adjusted_rewards, lambda_used).
-    """
+    """Adaptive λ from reward std: rel_std_scaled / (1 + rel_std_scaled). Returns (adjusted, λ_used)."""
     N = rewards.size(0)
     device = rewards.device
 
@@ -2374,15 +2129,7 @@ def adapt_tau(
 
 
 def cleanup_training(trainer=None, model=None, tokenizer=None, logger=None):
-    """
-    Release ALL training resources so evaluation starts with clean GPU state.
-
-    vLLM reference: PR #46023 (shutdown + gc.unfreeze + cleanup_dist_env)
-    vLLM issue #6544, #5716: del llm alone is insufficient
-    Unsloth docs: UNSLOTH_VLLM_STANDBY=0 during eval prevents dual engines
-
-    Safe to call multiple times (idempotent via try/except per step).
-    """
+    """Release ALL training resources for clean GPU state before eval. Idempotent (try/except per step)."""
     _log = logger.info if hasattr(logger, 'info') else print
 
     # ── 1. Shutdown vLLM engine (if trainer has one) ────────────────
@@ -2480,16 +2227,9 @@ def cleanup_training(trainer=None, model=None, tokenizer=None, logger=None):
 
 
 class RCGRPOTrainer(GRPOTrainer):
-    """
-    TRL GRPOTrainer subclass implementing reward-conditioned rollout
-    sampling (Eq. 3-4) on top of TRL's existing GRPO core.
+    """TRL GRPOTrainer subclass: reward-conditioned rollout sampling (Eq. 3-4) on top of TRL's GRPO core.
 
-    `high_reward_probability` (p in Eq. 3) should be set to the empirical
-    success rate of the RCTP-FT dataset (Appendix B.1.1: "we set p = 0.5"
-    because their RCTP-FT set was an exact 1:1 success:failure ratio).
-    Use `build_rctp_dataset_from_jsonl(...)` and compute
-    n_success / (n_success + n_failure) to get the matching value for your
-    data instead of hardcoding 0.5 blindly.
+    `high_reward_probability` = empirical success rate from RCTP-FT dataset (default 0.5 for 1:1 ratio).
     """
 
     def __init__(self, *args, high_reward_probability: float = 0.5, **kwargs):
@@ -2500,10 +2240,7 @@ class RCGRPOTrainer(GRPOTrainer):
 
     @staticmethod
     def register_reward_tokens(tokenizer) -> int:
-        """Register <|high_reward|> / <|low_reward|> as additional special
-        tokens. Returns the number of NEW tokens added (0 if already
-        present), so the caller knows whether resize_token_embeddings is
-        needed."""
+        """Register <|high_reward|>/<|low_reward|> as special tokens. Returns new tokens added."""
         existing = set(tokenizer.all_special_tokens)
         to_add = [t for t in REWARD_TOKENS if t not in existing]
         if not to_add:
@@ -2512,18 +2249,7 @@ class RCGRPOTrainer(GRPOTrainer):
         return num_added
 
     def _generate_and_score_completions(self, inputs):
-        """
-        Override TRL's per-group prompt construction to inject a freshly
-        sampled reward token (Eq. 3) into EACH of the G repeated prompts
-        before generation, then delegate to the parent implementation for
-        actual vLLM generation + reward scoring + advantage computation.
-
-        TRL repeats each unique prompt `num_generations` (= G) times inside
-        a batch before calling this method, so `inputs` already contains G
-        consecutive copies of the same example. We detect those repeats by
-        grouping on a per-example key (here: the 'query' field, which is
-        unique per training sample) and inject a distinct token per slot.
-        """
+        """Override TRL's prompt construction: inject sampled reward token (Eq. 3) into EACH of G prompt repeats before generation."""
         G = self.args.num_generations
 
         # Group inputs into consecutive chunks of size G (TRL's repeat order)
@@ -2548,20 +2274,9 @@ class RCGRPOTrainer(GRPOTrainer):
 
 
 class MMRGRPOTrainer(RCGRPOTrainer):
-    """
-    MMR-GRPO: Reward-conditioned GRPO + diversity-aware reward reweighting.
-
-    Subclasses RCGRPOTrainer. Overrides `_generate_and_score_completions` to
-    apply MMR reweighting to raw rewards BEFORE advantage computation,
-    exactly as specified in Algorithm 1 of the MMR-GRPO paper.
-
-    Embeddings are computed from the model's own hidden states (last layer,
-    mean-pooled over completion tokens) — no external embedding model needed.
-    This is both zero-dependency and policy-adaptive: representations evolve
-    as the model fine-tunes.
+    """RC-GRPO + MMR diversity-aware reward reweighting. Uses model hidden states for embeddings (no external model).
 
     Reference: https://github.com/WeiKangda/MMR-GRPO (ACL 2026 Findings)
-    TRL version targeted: v0.22.2
     """
 
     def __init__(self, *args, mmr_config=None, **kwargs):
@@ -2582,10 +2297,7 @@ class MMRGRPOTrainer(RCGRPOTrainer):
 
     @staticmethod
     def _render_prompts(inputs, processing_class):
-        """
-        Replicates TRL's maybe_apply_chat_template without importing from trl.data_utils.
-        Handles both text (standard) and message-list (conversational) prompts.
-        """
+        """Replicate TRL's maybe_apply_chat_template. Handles text + message-list prompts."""
         prompts_text = []
         for example in inputs:
             prompt = example["prompt"]
@@ -2596,19 +2308,7 @@ class MMRGRPOTrainer(RCGRPOTrainer):
         return prompts_text
 
     def _generate_and_score_completions(self, inputs):
-        """
-        Full override of TRL's generation-scoring pipeline with MMR insertion.
-
-        Cannot call super() because advantages would be computed from un-adjusted
-        rewards inside the parent. Instead, reproduce the parent's logic with MMR
-        inserted between reward and advantage computation.
-
-        TRL v0.22.2 API calls used:
-        - self._calculate_rewards(inputs, prompts, completions, completion_ids.tolist())
-        - self._move_model_to_vllm()
-        - self.llm.generate(prompts, sampling_params=self.sampling_params, use_tqdm=False)
-        - self._get_per_token_logps(self.model, prompt_completion_ids, prompt_mask, logits_to_keep)
-        """
+        """Full override: MMR insertion between reward and advantage computation (super() would compute advantages from unadjusted rewards)."""
         device = self.accelerator.device
 
         # Step 1: Get prompts
@@ -2941,28 +2641,7 @@ class GTPOTrainer(RCGRPOTrainer):
 
 
 class AVSPOTrainer(RCGRPOTrainer):
-    """
-    AVSPO: Adaptive Virtual Sample Policy Optimization (He et al., ICML 2026).
-
-    Inherits reward-conditioned rollout from RCGRPOTrainer. Overrides
-    `_generate_and_score_completions` to:
-    1. Inject reward tokens into prompts (same as RCGRPOTrainer, preserving RC)
-    2. Generate completions (NO prompt deduplication — each slot has unique token)
-    3. Compute raw rewards
-    4. Detect collapsed groups (sigma_R < tau) and compute ACR
-    5. When ACR > tau_adapt, inject virtual reward samples into collapsed groups
-    6. Recompute advantages with per-group augmented statistics
-    7. Return the standard dict (same format as parent)
-
-    Virtual samples are synthetic reward values that participate ONLY in
-    normalization statistics (mu, sigma) for advantage computation — they do
-    NOT contribute to the policy gradient (no nabla_theta log pi_theta term
-    exists for them).
-
-    CAUTION: Generation uses NON-deduplicated prompts (all B, not [::G])
-    because reward token injection creates DIFFERENT prompts per slot.
-    Unlike MMRGRPOTrainer, [::G] deduplication would discard G-1 tokens.
-    """
+    """AVSPO: Adaptive Virtual Sample Policy Optimization. Injects virtual reward samples into collapsed groups when ACR > tau_adapt. Generation uses NON-deduplicated prompts (unique reward token per slot prevents [::G] dedup)."""
 
     def __init__(self, *args, avspo_config=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -2986,11 +2665,7 @@ class AVSPOTrainer(RCGRPOTrainer):
 
     @staticmethod
     def _render_prompts(inputs, processing_class):
-        """
-        Replicates TRL's maybe_apply_chat_template without importing from trl.data_utils.
-        Handles both text (standard) and message-list (conversational) prompts.
-        (Same logic as MMRGRPOTrainer._render_prompts.)
-        """
+        """Replicate TRL's maybe_apply_chat_template. Handles text + message-list prompts."""
         prompts_text = []
         for example in inputs:
             prompt = example["prompt"]
@@ -3001,20 +2676,7 @@ class AVSPOTrainer(RCGRPOTrainer):
         return prompts_text
 
     def _generate_and_score_completions(self, inputs):
-        """
-        Full override of TRL's generation-scoring pipeline with AVSPO insertion.
-
-        Cannot call super()._generate_and_score_completions() because advantages
-        would be computed from un-modified rewards inside the parent. Instead,
-        reproduce the parent's logic with AVSPO inserted between reward and
-        advantage computation.
-
-        TRL v0.22.2 API calls used (same as MMRGRPOTrainer):
-        - self._calculate_rewards(inputs, prompts, completions, completion_ids.tolist())
-        - self._move_model_to_vllm()
-        - self.llm.generate(prompts, sampling_params=self.sampling_params, use_tqdm=False)
-        - self._get_per_token_logps(self.model, prompt_completion_ids, prompt_mask, logits_to_keep)
-        """
+        """Full override: AVSPO insertion between reward and advantage computation (same structure as MMRGRPOTrainer)."""
         import math
 
         device = self.accelerator.device
@@ -3509,38 +3171,11 @@ def load_model(
     env_name: str = "local",
     gpu_memory_utilization: float | None = None,
 ) -> tuple:
-    """
-    Unified model loader: load a base model with optional LoRA adapter.
+    """Unified model loader: load base model + optional LoRA adapter.
 
-    Three modes:
-      1. adapter_model_path=... + mode="train" → checkpoint resume for continued training
-      2. adapter_model_path=... + mode="inference" → checkpoint for evaluation
-      3. adapter_model_path=None + mode="inference" → base model only (benchmarking)
-      4. adapter_model_path=None + mode="train" → fresh LoRA from scratch (SFT/RCTP-FT)
-
-    Loading order (critically preserves embedding/adapter compatibility):
-      1. Determine tokenizer source (checkpoint vs base model)
-      2. Load base model via FastLanguageModel.from_pretrained (fast_inference handles internal patching)
-      3. Resize embeddings if adapter_model_path is given (checkpoint resume)
-      4. Load existing adapter or create a fresh LoRA via get_peft_model
-      5. Enable inference mode if mode == "inference"
-
-    Args:
-        base_model_path: Name or path of the original base model.
-        max_seq_length: Maximum sequence length.
-        load_in_4bit: Whether to quantize to 4-bit.
-        fast_inference: Enable vLLM fast inference (required for GRPO).
-        adapter_model_path: Path to a trained adapter checkpoint. If None,
-            creates a fresh LoRA via get_peft_model (from-scratch training).
-        mode: "train" (keep trainable) or "inference" (for_inference).
-        lora_rank: LoRA rank (used only when adapter_model_path is None).
-        lora_target_modules: LoRA target modules (fresh LoRA only).
-        lora_dropout: LoRA dropout (fresh LoRA only).
-        env_name: Environment name for Kaggle path override.
-
-    Returns:
-        Tuple of (model, tokenizer).
-    """
+    4 modes: (1) adapter+train→checkpoint resume (2) adapter+inference→eval
+    (3) no_adapter+inference→base benchmarking (4) no_adapter+train→fresh LoRA from scratch.
+    Returns (model, tokenizer)."""
     from transformers import AutoTokenizer
     from unsloth import FastLanguageModel
 
@@ -3712,26 +3347,7 @@ def execution_reward(
     function_library: dict,
     **kwargs,
 ) -> list[float]:
-    """Execution-based R_state reward using the Sandbox, continuous in [0, 1].
-
-    For each completion, creates a fresh ``Sandbox(function_library)``, runs all
-    extracted tool calls through it, and returns the fraction of calls that
-    succeeded (validated schema + mock execution).  This closes the "syntax but
-    non-executable call" hack vector — the agent must produce calls that not only
-    *look* correct but also pass schema validation and refer to real functions.
-
-    Args:
-        completions: List of model response strings.
-        ground_truth: List of ground-truth dicts (or JSON strings; used only for
-                      shape alignment, not for scoring).
-        function_library: Dict mapping function names to schemas, passed to each
-                          fresh ``Sandbox`` instance.
-        **kwargs: Additional keyword arguments (ignored; for TRL compatibility).
-
-    Returns:
-        List of float scores in [0.0, 1.0].  1.0 if every extracted tool call
-        executed successfully.  0.0 if none succeeded.
-    """
+    """Execution-based R_state reward using Sandbox. Returns fraction of calls that succeeded (schema validation + mock execution)."""
     rewards = []
     for c, _ in zip(completions, ground_truth):
         calls = extract_all_calls(c)
@@ -3751,13 +3367,7 @@ def build_trl_reward_functions(
     algorithm: str = "rc_grpo",
     function_library: dict | None = None,
 ):
-    """
-    Returns the list of reward functions compatible with TRL's GRPOTrainer
-    for the selected algorithm.
-
-    Each function signature: fn(completions: list[str], **kwargs) -> list[float]
-    kwargs includes 'ground_truth' passed through from the dataset columns.
-    """
+    """Return list of TRL-compatible reward functions for selected algorithm. Each fn: (completions, **kwargs) -> list[float]."""
     if algorithm == "rc_grpo":
         # RC-GRPO uses the SAME reward functions as vanilla GRPO.
         # The difference is only in prompt conditioning (reward tokens injected
@@ -3794,12 +3404,7 @@ def inject_reward_token_into_prompt(
     prompt: str,
     reward_token: str,
 ) -> str:
-    """
-    Inject [Reward Goal: <token>] right after the system message content
-    (before the system's <|im_end|> marker) in a pre-built prompt string.
-
-    For use when subclassing TRL's GRPOTrainer to add RC-GRPO support.
-    """
+    """Inject [Reward Goal: <token>] after system message content (before <|im_end|>) in pre-built prompt string."""
     # Find the system message end marker and inject right after system content
     system_end_marker = "<|im_start|>system\n"
     system_close_marker = "\n<|im_end|>\n"
@@ -4520,10 +4125,7 @@ if MODE == "rctp_ft":
     from trl import SFTTrainer, SFTConfig
 
     def _format_trajectory(trajectory):
-        """
-        Build reward-conditioned text: inject [Reward Goal: <token>] into the
-        system message (Appendix B), then append the assistant response.
-        """
+        """Build reward-conditioned text: inject [Reward Goal: <token>] into system message (Appendix B) + append assistant response."""
         reward_prefix = f"[Reward Goal: {trajectory.reward_token}]"
         messages = []
         injected = False
