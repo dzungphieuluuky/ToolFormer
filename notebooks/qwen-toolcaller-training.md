@@ -2248,6 +2248,19 @@ class RCGRPOTrainer(GRPOTrainer):
         num_added = tokenizer.add_special_tokens({"additional_special_tokens": to_add})
         return num_added
 
+    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
+        """
+        Backward-compat: TRL v0.24.0 renamed _get_per_token_logps to
+        _get_per_token_logps_and_entropies (returns tuple[logps, entropies]).
+        This wrapper provides the old single-tensor interface so all callers
+        (MMRGRPOTrainer, AVSPOTrainer) continue to work unchanged.
+        """
+        logps, _ = self._get_per_token_logps_and_entropies(
+            model, input_ids, attention_mask, logits_to_keep,
+            compute_entropy=False,
+        )
+        return logps
+
     def _generate_and_score_completions(self, inputs):
         """Override TRL's prompt construction: inject sampled reward token (Eq. 3) into EACH of G prompt repeats before generation."""
         G = self.args.num_generations
