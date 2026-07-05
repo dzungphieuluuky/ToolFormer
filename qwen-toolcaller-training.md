@@ -13,11 +13,11 @@ jupyter:
     name: python3
 ---
 
-<!-- #region _cell_guid="37fe7ef6-86a0-4e9f-9a43-4d386eee5626" _uuid="daf3acd5-9024-4e34-9d51-a3e5349926ac" jupyter={"outputs_hidden": false} -->
+<!-- #region _uuid="7f1854ce-1ad1-489e-8791-68b0be079cf8" _cell_guid="dd60a81e-abea-499f-bc92-ab4f01d2c14d" jupyter={"outputs_hidden": false} -->
 # Nemotron finetuning pipeline
 <!-- #endregion -->
 
-```python _cell_guid="2c096b49-0319-4946-aa1e-bba5869a1b8e" _uuid="40e91ca8-94c2-4e0f-9ee9-61a5f6682c62" jupyter={"outputs_hidden": false}
+```python _uuid="18aa6e5e-190e-47e2-8857-2287c09eb176" _cell_guid="076ea159-b55e-41cc-807c-9abcb0751de5" jupyter={"outputs_hidden": false}
 #@title Environment-Aware Installation
 import os
 import sys
@@ -92,7 +92,7 @@ except Exception:
 print(f"IS_T4_GPU: {IS_T4_GPU}")
 ```
 
-```python
+```python _uuid="bd005ec2-ed93-4de7-b73d-376585054ecd" _cell_guid="1ae652fc-b272-44d0-ac05-28a213bad6eb" jupyter={"outputs_hidden": false}
 # ── Base model path (auto-detects Kaggle path) ────────────────────────
 if ENV_NAME == "kaggle":
     BASE_MODEL_PATH = "/kaggle/input/models/dzung271828/unsloth/transformers/default/4/qwen3-4b-instruct-2507/qwen3-4b-instruct-2507"
@@ -101,7 +101,7 @@ else:
 print(f"Base model: {BASE_MODEL_PATH}")
 ```
 
-```python
+```python _uuid="95da6f23-b477-40d9-8a9b-2544a76ba2aa" _cell_guid="b12e7918-f970-43fa-a0b7-3e95977b7cb9" jupyter={"outputs_hidden": false}
 # ── Install packages ────────────────────────────────────────────────
 os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # Disable vLLM standby mode for training SFT
 
@@ -175,7 +175,7 @@ else:
 print("Core stack installation complete.")
 ```
 
-```python _cell_guid="deab93a3-f8f4-4b1a-a5fe-d26234b06331" _uuid="005bffe7-30b7-4031-a3f5-f21dc0d7d7a5" jupyter={"outputs_hidden": false}
+```python _uuid="a5f58aa9-4d78-44c6-b308-165a1f9b954d" _cell_guid="b5b6e81b-7779-462a-8aae-f6674db33f16" jupyter={"outputs_hidden": false}
 #@title Install utility packages
 import os
 from IPython import get_ipython
@@ -192,7 +192,7 @@ if ENV_NAME == "kaggle":
     !pip install --no-index --find-links=/kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/ /kaggle/input/datasets/nctuan/nvidia-offline-packages-nemotron/flash_attn-2.8.3+cu12torch2.10cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
 ```
 
-```python _cell_guid="version-check-001" jupyter={"outputs_hidden": false}
+```python _uuid="fce6bd3f-c800-4e8d-97bc-8eb5c53eaaa2" _cell_guid="966cea07-79ac-4c72-8a7c-e77f8d82fd1c" jupyter={"outputs_hidden": false}
 #@title Check installed library versions
 import sys
 import importlib
@@ -222,7 +222,7 @@ for lib_name in _LIBS:
         print(f"{lib_name:<20} {'not installed':<20}")
 ```
 
-```python _cell_guid="a955182c-dba8-4e85-ac6c-af0cc52bec87" _uuid="bd6e4b23-caa2-4376-8b6b-3e92ad4d3776" jupyter={"outputs_hidden": false}
+```python _uuid="6ee91650-356c-4039-b4ef-6d66de364221" _cell_guid="1f7d7cd7-7138-44f4-8cc8-1614e5620dad" jupyter={"outputs_hidden": false}
 import os
 import sys
 from IPython import get_ipython
@@ -292,11 +292,11 @@ if not is_kaggle:
     GITHUB_TOKEN = load_secret("GITHUB_TOKEN")
 ```
 
-```python _cell_guid="b925d264-a345-4bd6-a61a-25aca5734269" _uuid="d1c0fb9b-2d4b-48cf-8f1c-cbe9e7a7ea30" jupyter={"outputs_hidden": false}
+```python _uuid="c407568c-d400-4d67-a771-fa78a20a30ce" _cell_guid="a907c285-a93f-478f-980e-e46c7fe202d1" jupyter={"outputs_hidden": false}
 !find /usr -name "libcuda.so*" 2>/dev/null
 ```
 
-```python _cell_guid="6505d5c0-7f1b-4809-b1de-ed2e2c3f573a" _uuid="e9dcdfef-84ee-4418-be74-7817c5d7a2a9" jupyter={"outputs_hidden": false}
+```python _uuid="7a3fe06a-8e79-4765-b72f-e92b1d8c21f0" _cell_guid="5df0006f-3fbe-49b3-8329-32b3bfda5320" jupyter={"outputs_hidden": false}
 import os
 
 # Define the directory where libcuda.so lives
@@ -314,7 +314,7 @@ print(os.environ["LD_LIBRARY_PATH"])
 !rm -rf ~/.cache/torch_extensions/
 ```
 
-```python _cell_guid="72f73cb9-fca4-4074-b731-08fbb2952cbc" _uuid="0dae20f6-7620-41aa-a8e1-ec738015e00f" jupyter={"outputs_hidden": false}
+```python _uuid="78ab3c48-d63b-4e15-a998-6f364853cc78" _cell_guid="d1d4c041-474a-4a43-b020-43b347523101" jupyter={"outputs_hidden": false}
 # Clone repo (Colab) or use Kaggle dataset mount (Kaggle)
 if IS_T4_GPU:
     %cd {BASE_OUTPUT_PATH}
@@ -325,10 +325,9 @@ else:
     print(f"Kaggle mode: data loaded from {DATA_MOUNT}")
     print("Skipping git clone (no internet). Ensure toolformer-data dataset is attached.")
     # Data lives at /kaggle/input/datasets/dzung271828/toolformer-data/
-
 ```
 
-```python
+```python _uuid="e59b3228-d319-4211-b330-5e47a54bce8b" _cell_guid="c1a92860-f6cf-43c6-a090-1614731fa141" jupyter={"outputs_hidden": false}
 import os
 import sys
 import json
@@ -386,7 +385,7 @@ torch.manual_seed(SEED)
 print("All imports successful.")
 ```
 
-```python
+```python _uuid="5847f07a-8e86-4c76-ace8-75bb53b92df0" _cell_guid="32c65812-4fef-4ca2-bd25-52f051b6ddb1" jupyter={"outputs_hidden": false}
 # ===================== logging_utils.py =====================
 def get_logger(name: str, level: int = logging.INFO) -> logging.Logger:
     """Create a RichHandler-based logger.
@@ -446,7 +445,7 @@ def generate_response(
     return tokenizer.decode(new_tokens, skip_special_tokens=False)
 ```
 
-```python
+```python _uuid="8f9dbf1c-6fe3-4b55-a996-66ba62c61ff7" _cell_guid="253997e9-d837-4fa3-9f77-1a067b5bfef8" jupyter={"outputs_hidden": false}
 # ===================== sandbox.py (FIXED) =====================
 # BUG FIXED: `execute_all` and `_resolve_call` imported from a nonexistent
 # package `src.reward.base_reward`. This is a single-file script — those
@@ -650,7 +649,7 @@ class Sandbox:
         })
 ```
 
-```python
+```python _uuid="4de303b5-c524-49b3-882e-bf6661219f24" _cell_guid="9dfa87a9-581b-4384-98ac-d685207016aa" jupyter={"outputs_hidden": false}
 # ===================== vietnamese_normalizer.py =====================
 """
 Vietnamese text normalization for cross-script matching.
@@ -780,7 +779,7 @@ def build_ngrams(text: str, n: int = 2) -> set[str]:
     return {text[i : i + n] for i in range(len(text) - n + 1)}
 ```
 
-```python
+```python _uuid="8a3c8221-d6c7-430b-9270-813b90f59b02" _cell_guid="8cb9b108-03cb-45ba-aa51-0212f04e4a8c" jupyter={"outputs_hidden": false}
 # ===================== value_catalog.py =====================
 """
 Argument value catalog with alias-based lookup.
@@ -1044,7 +1043,7 @@ def load_catalog_from_json(
     return catalogs
 ```
 
-```python
+```python _uuid="3d29ca0e-e254-47bc-9bac-fb4af599dbce" _cell_guid="bea961b6-bcd6-4bf5-9a39-991af5737d85" jupyter={"outputs_hidden": false}
 # ===================== smart_retriever.py =====================
 """
 Smart retriever that combines:
@@ -1536,7 +1535,7 @@ class TelcoRetriever:
         )
 ```
 
-```python
+```python _uuid="f3c65d57-bdf8-4a0a-89d0-282ae376ea98" _cell_guid="c62e4619-93bf-4fcf-aeb1-60b22ab3ca81" jupyter={"outputs_hidden": false}
 # ===================== excel_parser.py =====================
 def _safe_json(value: str, fallback=None):
     if not isinstance(value, str) or not value.strip():
@@ -1562,7 +1561,7 @@ def load_function_library(library_path: str) -> dict:
         return json.load(fh)
 ```
 
-```python
+```python _uuid="9b9919ef-f51d-4cf3-8550-aa51c76897db" _cell_guid="58b00892-bd2c-46f1-babd-b78adfc61f8c" jupyter={"outputs_hidden": false}
 # ===================== base_reward.py =====================
 import re
 import json
@@ -1975,7 +1974,7 @@ def composite_reward(completions: list[str], ground_truth: list, **kwargs) -> li
     return rewards
 ```
 
-```python
+```python _uuid="3214ddaf-1daa-484f-9cdf-6b936157ab4b" _cell_guid="d8968c2d-baa0-4a74-948e-acbb457e0e9f" jupyter={"outputs_hidden": false}
 """
 RC-GRPO: Reward-Conditioned Group Relative Policy Optimization
 Faithful implementation based on arXiv:2602.03025
@@ -2077,7 +2076,7 @@ def compute_action_coverage_reward(
     return sum(call_scores) / len(call_scores)
 ```
 
-```python
+```python _uuid="57cebdc9-61a4-45be-b138-88712051effc" _cell_guid="f232e4ea-1827-4baa-b1df-b119ba6cf47e" jupyter={"outputs_hidden": false}
 # ─────────────────────────────────────────────────────────────────────────────
 # RC-GRPO ↔ TRL integration
 #
@@ -2511,19 +2510,6 @@ class RCGRPOTrainer(GRPOTrainer):
             return 0
         num_added = tokenizer.add_special_tokens({"additional_special_tokens": to_add})
         return num_added
-
-    def _get_per_token_logps(self, model, input_ids, attention_mask, logits_to_keep):
-        """
-        Backward-compat: TRL v0.24.0 renamed _get_per_token_logps to
-        _get_per_token_logps_and_entropies (returns tuple[logps, entropies]).
-        This wrapper provides the old single-tensor interface so all callers
-        (MMRGRPOTrainer, AVSPOTrainer) continue to work unchanged.
-        """
-        logps, _ = self._get_per_token_logps_and_entropies(
-            model, input_ids, attention_mask, logits_to_keep,
-            compute_entropy=False,
-        )
-        return logps
 
     def _generate_and_score_completions(self, inputs):
         """
@@ -2991,9 +2977,9 @@ class AVSPOTrainer(RCGRPOTrainer):
         self.sampling_params = SamplingParams(
             temperature=self.args.temperature,
             max_tokens=self.args.max_completion_length,
-            top_p=getattr(self.args, 'top_p', 0.95),
-            min_p=getattr(self.args, 'min_p', 0.05),
-            seed=getattr(self.args, 'seed', 3407),
+            top_p=0.95,
+            min_p=0.05,
+            seed=3407,
             stop=["</tool_call>"],
             include_stop_str_in_output=True,
         )
@@ -3304,7 +3290,7 @@ def rc_grpo_format_func(completions: list[str], **kwargs) -> list[float]:
     return format_reward(completions, **kwargs)
 ```
 
-```python
+```python _uuid="9ab06933-6ba2-4f54-a40c-2fdfc92d173f" _cell_guid="1dc0cd9b-1ba7-4f16-b6aa-cb45d3e47a7b" jupyter={"outputs_hidden": false}
 # ===================== base_trainer.py =====================
 import json
 import logging
@@ -3827,7 +3813,7 @@ def inject_reward_token_into_prompt(
     return prompt + f"\n[Reward Goal: {reward_token}]\n"
 ```
 
-```python
+```python _uuid="3c5ecb4e-6953-4e00-8d68-66056ca39bde" _cell_guid="60934c5a-a508-4024-8f17-a6b58d168174" jupyter={"outputs_hidden": false}
 # ===================== metrics.py =====================
 def compute_all_metrics(response: str, ground_truth: dict, sandbox, latency_ms: float,
                         cost_estimate: float, function_library: dict) -> dict[str, float]:
@@ -4059,7 +4045,7 @@ def evaluate_model(
     return {"model": model_name_tag, "per_sample": results, "aggregate": agg}
 ```
 
-```python
+```python _uuid="d79f2572-57a3-4cae-a381-5a1a353ff64e" _cell_guid="15f24350-b143-45b4-b364-95eff20d759c" jupyter={"outputs_hidden": false}
 # ===================== report_generator.py =====================
 METRIC_DISPLAY_NAMES = {
     "function_selection_accuracy": "Func. Selection Acc.",
@@ -4144,7 +4130,7 @@ def _plot_radar(df: pd.DataFrame, out: Path) -> None:
     plt.close(fig)
 ```
 
-```python
+```python _uuid="366cd9c1-7449-48b1-bcc9-4e88ec3e7060" _cell_guid="53eeaaa5-f7cc-4cc4-8f33-bca4238cec2e" jupyter={"outputs_hidden": false}
 import os
 if ENV_NAME == "colab":
     # Create the data directory
@@ -4154,7 +4140,7 @@ if ENV_NAME == "colab":
     !unzip -o /content/generated.zip -d /content/ToolFormer/data
 ```
 
-```python
+```python _uuid="c8672220-196f-4333-b311-d0b7f5bc5a62" _cell_guid="1491ebe9-e550-4fc6-a661-96a5240c78c7" jupyter={"outputs_hidden": false}
 # ===================== CONFIGURATION =====================
 MODE = "rc_grpo"  # one of: "sft", "grpo", "rc_grpo", "rctp_ft"
 assert MODE in ("sft", "grpo", "rc_grpo", "rctp_ft"), \
@@ -4187,7 +4173,7 @@ TRAIN_CONFIG = {
         "use_gradient_checkpointing": "unsloth",
     },
     "training": {
-        "output_dir": f"outputs/{MODE}_model{'_' + os.environ.get('KL_COEFFICIENT', 'default') if os.environ.get('KL_COEFFICIENT') else ''}",
+        "output_dir": f"outputs/{MODE}_model",
         # Table 10 (RC-GRPO RL stage hyperparameters)
         "learning_rate": 5e-6,
         "adam_beta1": 0.9,
@@ -4213,8 +4199,8 @@ TRAIN_CONFIG = {
         "grpo_path": str(DATA_DIR / "grpo_dataset_stage2.jsonl"),
         "rcgrpo_path": str(DATA_DIR / "rcgrpo_dataset_stage2.jsonl"),
         "rctp_path": str(DATA_DIR / "rctp_dataset.jsonl"),
-        "max_prompt_length": 7680,
-        "max_completion_length": 512,
+        "max_prompt_length": 6144,
+        "max_completion_length": 2048,
         "include_all_threshold": 5,
         "eval_batch_size": 128,
     },
@@ -4226,7 +4212,7 @@ TRAIN_CONFIG = {
                                    # reference-free comparison across all
                                    # 4 loss types).  Also changeable at
                                    # runtime via TRAIN_CONFIG.
-        "loss_type": "grpo",     # Options: "grpo", "dapo", "cispo", "gtpo", "mmr_grpo", "avspo"
+        "loss_type": "cispo",     # Options: "grpo", "dapo", "cispo", "gtpo", "mmr_grpo", "avspo"
         "epsilon_high": 0.28,     # Upper clip bound (CISPO/DAPO asymmetric clip)
         "mask_truncated_completions": True,
     },
@@ -4280,16 +4266,16 @@ else:
 
 # ===================== Load model & register reward tokens =====================
 # Resolve output directory from active MODE
-MODE_OUTPUT_DIR = TRAIN_CONFIG["training"]["output_dir"]
+MODE_OUTPUT_DIR = "rctp_rcgrpo_KL0_numgen16_cispo_maxstep1000"
 ```
 
-```python
+```python _uuid="fbb9d08f-8035-4aa7-919f-93d1ae3a5f9f" _cell_guid="f047cd9f-1e57-4617-afc6-a3dd5ea401c6" jupyter={"outputs_hidden": false}
 # ── Smart truncation safety net ─────────────────────────────────────
 # smart_truncate was removed — it was legacy (disabled) code.
 # See AGENTS.md: "max_seq_length=8192 fits all samples"
 ```
 
-```python
+```python _uuid="3f861664-380f-4d16-a775-d26096987244" _cell_guid="fe2d3238-1315-4fe7-8e6e-e424f1d9ff58" jupyter={"outputs_hidden": false}
 # ===================== SFT TRAINING =====================
 def load_jsonl(path: str) -> list[dict]:
     samples: list[dict] = []
@@ -4467,14 +4453,14 @@ if MODE == "sft":
     )
 ```
 
-```python
+```python _uuid="68ddb39d-955b-4f55-9e3d-13f19170043b" _cell_guid="6f340b86-d566-4dd9-b219-265d2e3c5503" jupyter={"outputs_hidden": false}
 if MODE == "sft":
     !zip -r sft_model.zip outputs/sft_model
     from IPython.display import FileLink
     FileLink("sft_model.zip")
 ```
 
-```python
+```python _uuid="59179557-3790-4065-b276-6c2ea2bc3b53" _cell_guid="1a7aa3a2-c804-4721-a7ea-7974e0f68ad0" jupyter={"outputs_hidden": false}
 # ===================== STAGE 1: RCTP-FT (only for rc_grpo) =====================
 SAMPLE_LOG = get_logger("sample")
 high_reward_probability = 0.5  # overwritten below from real data stats
@@ -4693,23 +4679,22 @@ if MODE == "rctp_ft":
     )
 ```
 
-```python
+```python _uuid="4bf76aed-8d42-4f95-a490-32dff966998d" _cell_guid="84c25595-7e62-47fd-86e4-c5a46b4f5517" jupyter={"outputs_hidden": false}
 if MODE == "rctp_ft":
     !zip -r rctp_ft_model.zip outputs/rctp_ft_model
     from IPython.display import FileLink
     FileLink("rctp_ft_model.zip")
 ```
 
-```python
+```python _uuid="3cb3a96a-aa53-4ae3-9def-69dc5d9611a4" _cell_guid="5bbb3df9-5cc9-4817-8c42-d808e2767fa0" jupyter={"outputs_hidden": false}
 # ===================== Unified model loader for Stage 2 =====================
 # Loads a base model with a fine-tuned LoRA adapter for inference or training,
 # controlled by the `mode` argument.  Named parameters base_model_path /
 # adapter_model_path make it clear what each path refers to.
 # (Now handled by the unified load_model() above.)
-
 ```
 
-```python
+```python _uuid="962c105a-8dc5-4c42-90fd-a664c19fe497" _cell_guid="8421421b-72f5-4706-bf0c-1d2b05660550" jupyter={"outputs_hidden": false}
 if MODE in ("grpo", "rc_grpo"):
     # ===================== STAGE 2: RC-GRPO (or vanilla GRPO baseline) =====================
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"  # required by vLLM standby mode 
@@ -4937,7 +4922,7 @@ else:
     print(f"Skipping Stage 2 (MODE={MODE}).")
 ```
 
-```python
+```python _uuid="038003eb-aac1-4e9f-9fe1-9929de205eba" _cell_guid="306b5c24-1e90-48e3-bae0-98b737cfa668" jupyter={"outputs_hidden": false}
 # ── Free training resources for clean evaluation ──
 # Releases: vLLM engine, distributed state, model, LoRA adapter, CUDA cache.
 # Uses the cleanup_training() helper defined in the utilities section above.
@@ -4951,7 +4936,7 @@ import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"
 ```
 
-```python
+```python _uuid="baa60ba9-0e0f-4510-87be-8d4b502546e6" _cell_guid="fe6ccf93-ee0a-4b39-9fdd-5caef6c1e7b9" jupyter={"outputs_hidden": false}
 # ── Colab eval: download model from Hugging Face Hub to MODE_OUTPUT_DIR ──
 # The HF_TOKEN secret must be set in Colab secrets for private repos.
 COLAB_EVAL_MODEL_ID = "dzungpham/telecom-toolcaller"
@@ -4968,65 +4953,65 @@ if ENV_NAME == "colab":
     print("[Colab] Download complete.")
 ```
 
-```python
-# ===================== EVALUATION =====================
-os.environ["TORCH_CUDAGRAPH_DISABLE"] = "1"  # FIX: avoid stale CUDA graph pool crash (use_count > 0 assertion)
-os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval: ensures no dual vLLM engines; gpu_memory_utilization is passed explicitly from TRAIN_CONFIG
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"  # Reset CUDA allocator to clear stale graph pools
-# MODE_OUTPUT_DIR was already set from TRAIN_CONFIG["training"]["output_dir"] above — no override needed
-test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
-if Path(test_dataset_path).exists():
-    retriever = FunctionRetriever(function_library, method="hybrid")
-    sandbox = Sandbox(function_library)
+```python _uuid="950a8899-9daf-4148-9236-80c53f801cfd" _cell_guid="88fd193c-efe8-43a4-9d5f-cb00c3ec125f" jupyter={"outputs_hidden": false}
+# # ===================== EVALUATION =====================
+# os.environ["TORCH_CUDAGRAPH_DISABLE"] = "1"  # FIX: avoid stale CUDA graph pool crash (use_count > 0 assertion)
+# os.environ["UNSLOTH_VLLM_STANDBY"] = "0"  # eval: ensures no dual vLLM engines; gpu_memory_utilization is passed explicitly from TRAIN_CONFIG
+# os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:False"  # Reset CUDA allocator to clear stale graph pools
+# # MODE_OUTPUT_DIR was already set from TRAIN_CONFIG["training"]["output_dir"] above — no override needed
+# test_dataset_path = TRAIN_CONFIG["data"]["test_path"]
+# if Path(test_dataset_path).exists():
+#     retriever = FunctionRetriever(function_library, method="hybrid")
+#     sandbox = Sandbox(function_library)
 
-    eval_result = evaluate_model(
-        adapter_model_path=MODE_OUTPUT_DIR,
-        test_dataset_path=test_dataset_path,
-        function_library=function_library,
-        retriever=retriever,
-        sandbox=sandbox,
-        top_k=5,
-        max_new_tokens=512,
-        model_name_tag=MODE,
-        condition_on_high_reward=(MODE == "rc_grpo"),
-        argument_values=argument_values_catalog,
-        use_vllm=EVAL_USE_VLLM,
-        batch_size=TRAIN_CONFIG["data"]["eval_batch_size"],
-        gpu_memory_utilization=TRAIN_CONFIG["model"]["gpu_memory_utilization"],
-    )
-    from tabulate import tabulate
-    agg = eval_result["aggregate"]
-    metric_names = [
-        ("Function Selection Accuracy", "function_selection_accuracy"),
-        ("Argument Accuracy", "argument_accuracy"),
-        ("Schema Validity", "schema_validity"),
-        ("Execution Success Rate", "execution_success_rate"),
-        ("Task Success Rate", "task_success_rate"),
-        ("Hallucinated Call Rate", "hallucinated_call_rate"),
-        ("Abstention Accuracy", "abstention_accuracy"),
-        ("Latency (ms)", "latency_ms"),
-        ("Cost / Query (USD)", "cost_per_query_usd"),
-    ]
-    rows = []
-    for display_name, key in metric_names:
-        mean_val = agg.get(key, float("nan"))
-        std_val = agg.get(f"{key}__std", float("nan"))
-        import math
-        if isinstance(std_val, (int, float)) and not math.isnan(std_val):
-            rows.append([display_name, f"{mean_val:.4f} \u00b1 {std_val:.4f}"])
-        else:
-            rows.append([display_name, f"{mean_val:.4f}"])
-    print(f"\nEvaluation Benchmark \u2014 {MODE}")
-    print(tabulate(rows, headers=["Metric", "Value"], tablefmt="grid"))
-    generate_report([eval_result])
-    from IPython.display import FileLink
-    FileLink("outputs/evaluation_reports/metrics_summary.csv")
-    FileLink("outputs/evaluation_reports/full_results.json")
-else:
-    print("Test dataset not found; skipping evaluation.")
+#     eval_result = evaluate_model(
+#         adapter_model_path=MODE_OUTPUT_DIR,
+#         test_dataset_path=test_dataset_path,
+#         function_library=function_library,
+#         retriever=retriever,
+#         sandbox=sandbox,
+#         top_k=5,
+#         max_new_tokens=512,
+#         model_name_tag=MODE,
+#         condition_on_high_reward=(MODE == "rc_grpo"),
+#         argument_values=argument_values_catalog,
+#         use_vllm=EVAL_USE_VLLM,
+#         batch_size=TRAIN_CONFIG["data"]["eval_batch_size"],
+#         gpu_memory_utilization=TRAIN_CONFIG["model"]["gpu_memory_utilization"],
+#     )
+#     from tabulate import tabulate
+#     agg = eval_result["aggregate"]
+#     metric_names = [
+#         ("Function Selection Accuracy", "function_selection_accuracy"),
+#         ("Argument Accuracy", "argument_accuracy"),
+#         ("Schema Validity", "schema_validity"),
+#         ("Execution Success Rate", "execution_success_rate"),
+#         ("Task Success Rate", "task_success_rate"),
+#         ("Hallucinated Call Rate", "hallucinated_call_rate"),
+#         ("Abstention Accuracy", "abstention_accuracy"),
+#         ("Latency (ms)", "latency_ms"),
+#         ("Cost / Query (USD)", "cost_per_query_usd"),
+#     ]
+#     rows = []
+#     for display_name, key in metric_names:
+#         mean_val = agg.get(key, float("nan"))
+#         std_val = agg.get(f"{key}__std", float("nan"))
+#         import math
+#         if isinstance(std_val, (int, float)) and not math.isnan(std_val):
+#             rows.append([display_name, f"{mean_val:.4f} \u00b1 {std_val:.4f}"])
+#         else:
+#             rows.append([display_name, f"{mean_val:.4f}"])
+#     print(f"\nEvaluation Benchmark \u2014 {MODE}")
+#     print(tabulate(rows, headers=["Metric", "Value"], tablefmt="grid"))
+#     generate_report([eval_result])
+#     from IPython.display import FileLink
+#     FileLink("outputs/evaluation_reports/metrics_summary.csv")
+#     FileLink("outputs/evaluation_reports/full_results.json")
+# else:
+#     print("Test dataset not found; skipping evaluation.")
 ```
 
-```python
+```python _uuid="e3da14d4-df83-41f3-85df-b6e089a5cdad" _cell_guid="08a232a2-4b1c-4704-84d7-9555ea56d752" jupyter={"outputs_hidden": false}
 try:
     del model
     del tokenizer

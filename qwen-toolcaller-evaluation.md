@@ -4181,8 +4181,11 @@ else:
         generate_report(all_results)
     elif len(all_results) == 1:
         print(f"\nSingle model evaluated. Full report at {REPORTS_DIR / list(CKPT_LIST.keys())[0]}")
-        from IPython.display import FileLink
-        FileLink(f"{REPORTS_DIR / list(CKPT_LIST.keys())[0]}.zip")
 
     print(f"\nEvaluation loop complete. Reports in {REPORTS_DIR}")
+```
+
+```python _cell_guid="filelink-cell" _uuid="filelink-cell" jupyter={"outputs_hidden": false}
+from IPython.display import FileLink
+FileLink(f"{REPORTS_DIR / list(CKPT_LIST.keys())[0]}.zip")
 ```
