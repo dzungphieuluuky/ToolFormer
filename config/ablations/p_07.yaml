@@ -1,0 +1,4 @@
+# Reward sampling probability p = 0.7 (more exploitation)
+# More high-reward tokens → focus on successful trajectories
+rc_grpo:
+  high_reward_probability: 0.7

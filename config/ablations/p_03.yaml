@@ -1,0 +1,4 @@
+# Reward sampling probability p = 0.3 (more exploration)
+# Fewer high-reward tokens in each group → broader search
+rc_grpo:
+  high_reward_probability: 0.3

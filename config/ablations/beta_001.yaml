@@ -1,0 +1,4 @@
+# KL coefficient β = 0.01 (minimal regularization)
+grpo:
+  kl_coefficient: 0.01
+  adaptive_beta: false

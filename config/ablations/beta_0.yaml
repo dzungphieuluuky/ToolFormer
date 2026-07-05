@@ -1,0 +1,5 @@
+# KL coefficient β = 0 (DAPO-style, pure reward maximization)
+# Literature: TRL v0.19+ defaults to β=0; DAPO removes KL entirely
+grpo:
+  kl_coefficient: 0.0
+  adaptive_beta: false

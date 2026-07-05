@@ -1,0 +1,4 @@
+# KL coefficient β = 0.04 (TRL pre-v0.19 default)
+grpo:
+  kl_coefficient: 0.04
+  adaptive_beta: false

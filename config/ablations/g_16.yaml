@@ -1,0 +1,7 @@
+# Group size G = 16 (consensus recommended)
+# Literature: consensus G=16 for larger models; may OOM on 4B+4bit
+training:
+  num_generations: 16
+vllm:
+  gpu_memory_utilization: 0.7
+  vllm_gpu_memory_utilization: 0.25

@@ -1,0 +1,3 @@
+# Group size G = 5 (RC-GRPO paper baseline)
+training:
+  num_generations: 5

@@ -1,0 +1,7 @@
+# Group size G = 8 (consensus minimum)
+# Literature: TRL/NeMo/verl docs all recommend G >= 8
+training:
+  num_generations: 8
+vllm:
+  gpu_memory_utilization: 0.7
+  vllm_gpu_memory_utilization: 0.25

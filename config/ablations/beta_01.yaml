@@ -1,0 +1,4 @@
+# KL coefficient β = 0.1 (RC-GRPO paper baseline)
+grpo:
+  kl_coefficient: 0.1
+  adaptive_beta: false
