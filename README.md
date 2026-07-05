@@ -251,39 +251,6 @@ Each checkpoint generates a full evaluation report with:
 
 ---
 
-## Ablation Study Findings
-
-### 1. KL Divergence (Bảng 4)
-| KL | Func Sel | Task Succ | Schema Val | Exec Succ | Abstention |
-|----|----------|-----------|------------|-----------|------------|
-| 0.1 | 0.400 | 0.400 | 0.397 | 0.437 | 0.835 |
-| **0.0** | **0.615** | **0.489** | **0.749** | **0.729** | **0.451** |
-
-**KL removal = +53.8% Func Sel, but -45.9% Abstention.** The single most important hyperparameter.
-
-### 2. Loss Type at KL=0 (Bảng 6)
-| Loss | Func Sel | Task Succ | Per-sample vs GRPO |
-|------|----------|-----------|-------------------|
-| GRPO | 0.607 | 0.484 | — |
-| DAPO | 0.614 | 0.487 | 100% identical |
-| CISPO | 0.614 | 0.487 | 100% identical |
-
-**Loss type is irrelevant at KL=0.** DAPO/CISPO predictions are byte-identical to GRPO despite different weights.
-
-### 3. num_generations (Bảng 3)
-| G | Func Sel | MD5 match |
-|---|----------|-----------|
-| 8 | 0.615 | — |
-| 16 | 0.614 | 100% (same as ng8) |
-| 32 | 0.610 | Different weights |
-
-**G=16 is sufficient.** Increasing beyond 16 yields no improvement.
-
-### 4. Noise Floor
-Same checkpoint evaluated twice: ~10.4% per-sample disagreement (func sel), ~13.1% (task succ). **Any difference <10% is statistical noise.**
-
----
-
 ## Key Conventions
 
 - **Script imports**: All `scripts/` use `sys.path.insert(0, ...)` to resolve project root
