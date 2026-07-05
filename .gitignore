@@ -8,6 +8,7 @@ unsloth*
 *.zip
 models/
 outputs/train_ckpts/
+qwen-models/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
